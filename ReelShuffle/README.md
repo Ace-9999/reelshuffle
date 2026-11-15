@@ -4,7 +4,7 @@ A personal Manifest V3 Chrome extension for revisiting your own saved Instagram 
 
 ## Install
 
-1. Keep this entire **ReelShuffle** folder together. If you received a ZIP, extract it first.
+1. Download the release ZIP from GitHub and extract it, or use the **ReelShuffle** folder from this repo. Keep the folder together.
 2. In the Chrome profile where you use Instagram, open **chrome://extensions**.
 3. Turn on **Developer mode**, click **Load unpacked**, and choose this folder (the one containing `manifest.json`).
 4. Log in at **https://www.instagram.com/** in that same profile.
@@ -17,19 +17,23 @@ A personal Manifest V3 Chrome extension for revisiting your own saved Instagram 
 
 All Instagram requests run **inside your instagram.com tab** via `content.js`. They are ordinary same-origin calls made with your logged-in session, the same calls Instagram's own Saved page makes. Version 1.0 sent them from the extension's background worker (a `chrome-extension://` origin), and Instagram rejected those. That is why it found nothing.
 
-- Opening your Saved page (or navigating to it inside Instagram) starts a full sync of every saved page, about 50 items per request, 1.5 s apart. With ~1,000 saved reels that takes roughly 30–40 seconds.
-- Opening the feed or pressing **Refresh** also syncs. It uses any open Instagram tab. If none is open, ReelShuffle opens `instagram.com` in a background tab and closes it after 3 idle minutes.
+- **Refresh** (or opening your Saved page on Instagram) first sends any unsaves you made in the feed to Instagram, then fetches your saved list newest-first and **stops at the first page containing a reel you already have**. A normal refresh usually takes one or two requests.
+- **Complete refresh** (in Settings) walks the whole saved list and also removes reels you unsaved elsewhere. With ~1,000 saves it takes about 30–40 seconds (50 per request, 1.5 s apart).
+- Opening the feed does not sync; it plays from the local library. The only automatic sync is the very first one, when nothing is cached yet.
+- Requests use any open Instagram tab. If none is open, ReelShuffle opens `instagram.com` in a background tab and closes it after 3 idle minutes.
 - One odd saved item (deleted post, unknown type) is skipped and does not abort the sync.
 
 The first full refresh can take a few minutes for a large library. The feed starts after the first page arrives. Future opens draw from IndexedDB immediately while a complete refresh runs. Keep the folder in its installed location; Chrome loads its files from there. Edge and Brave offer equivalent developer extension installation screens.
 
 ## Use
 
-- Scroll, swipe vertically, use **Up/Down** or **K/J**, or click **Keep discovering**.
-- **M** toggles sound; **Space** toggles play/pause; **U** unsaves the current item.
-- **Saved** removes one item from your actual Instagram saved list. **Undo** is available for five seconds and re-saves the item on Instagram. The feed advances only after Instagram confirms the unsave. A failed request keeps the item.
-- **Original** opens the Instagram post. **Reshuffle** starts another shuffled round. Reaching the end also starts a new round automatically; there are no repeats inside a round.
-- **Refresh** starts a full sync. **Pause refresh** stops pagination while preserving already cached records.
+- Scroll anywhere on the page, swipe, or use **Down/Right** / **Up/Left** (or **J/K**) to move between reels.
+- **M** toggles sound; **Space** toggles play/pause; **U** unsaves; **C** opens comments.
+- **Saved** unsaves the reel **locally**: it leaves your feed at once and is queued. The queue goes to Instagram on your next Refresh, and the status line shows how many are waiting. **Undo** just takes it back out of the queue.
+- **No repeats:** ReelShuffle remembers which reels you've seen, even across opens. You only get unseen reels until every one has been shown; then it starts over. **Reshuffle** clears that memory and starts a fresh round of everything.
+- **Comments** shows the current reel's comments (read only). **Original** opens the post on Instagram.
+- **Export / import** (download icon): export the library as JSON or CSV. Import a JSON or CSV export to **replace** the local library; Instagram is not changed.
+- **Pause refresh** stops a refresh while keeping what was already cached.
 - Settings control autoplay, sound, request pace, and optionally photos and the first slide of carousels. Saved video posts are included by default.
 - **Clear local data** removes the cached library and preferences. It does not remove your saves on Instagram. An active Instagram safety cooldown is retained until it expires.
 

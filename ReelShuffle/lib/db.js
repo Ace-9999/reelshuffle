@@ -35,6 +35,11 @@ export const getReels = () => transaction(['reels'], 'readonly', tx => {
 export const putReels = records => transaction(['reels'], 'readwrite', tx => {
   for (const reel of records) tx.objectStore('reels').put(cleanRecord(reel));
 });
+// Import: swap the whole library in one transaction, so a failure leaves the old one intact.
+export const replaceReels = records => transaction(['reels'], 'readwrite', tx => {
+  const store = tx.objectStore('reels'); store.clear();
+  for (const reel of records) store.put(cleanRecord(reel));
+});
 export const deleteReel = shortcode => transaction(['reels'], 'readwrite', tx => tx.objectStore('reels').delete(shortcode));
 export const getMeta = key => transaction(['meta'], 'readonly', tx => {
   const r = tx.objectStore('meta').get(key); return () => r.result;

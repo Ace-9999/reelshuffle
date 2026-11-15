@@ -24,8 +24,8 @@ main{display:flex;justify-content:center;align-items:center;height:100vh;height:
 @media(max-width:620px){.top-status{display:none}.topbar .brand{font-size:16px}}
 /* Caption, seek bar and side buttons only show while the cursor is over the reel (mouse devices only). */
 @media(hover:hover){
-.action-rail,.card-metadata,.video-progress,.reel-card:after{transition:opacity .25s ease}
-.player-shell:not(:hover):not(:has(:focus-visible)) :is(.action-rail,.card-metadata,.video-progress),
+.card-metadata,.video-progress,.reel-card:after{transition:opacity .25s ease}
+.player-shell:not(:hover):not(:has(:focus-visible)) :is(.card-metadata,.video-progress),
 .player-shell:not(:hover):not(:has(:focus-visible)) .reel-card:after{opacity:0;pointer-events:none}
 }
 
@@ -46,3 +46,9 @@ main{display:flex;justify-content:center;align-items:center;height:100vh;height:
 .comments-foot .text-button{font-size:12px;color:#a9afc7}
 #comments-open[aria-expanded=true]>span{background:#ffffff26}
 @media(min-width:900px){body.comments-open main{padding-right:380px}}
+
+/* Side buttons sit outside the reel, always visible. */
+.player-shell{width:min(calc(100vw - 180px),calc(100dvh * 9 / 16))}
+.action-rail{right:-78px;bottom:110px}
+.import-heading{font-size:15px;margin:22px 0 4px}
+@media(max-width:520px){.player-shell{width:calc(100vw - 76px);margin-right:60px}.action-rail{right:-62px}}

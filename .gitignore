@@ -7,3 +7,4 @@ qa-output/
 .qa-profile*/
 *.zip
 __pycache__/
+node_modules/

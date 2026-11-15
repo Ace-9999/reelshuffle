@@ -7,6 +7,13 @@ let settings = settingsWithDefaults(), state = {}, library = new Map(), order = 
 let cards = new Map(), assets = new Map(), unavailable = new Set(), pending = new Map();
 let blocked = false, switchingRound = false, refreshingCache = false, refreshAgain = false;
 let toastTimer, undoTimer, undoAction, nextRoundTimer, wheelAt = 0, wheelDelta = 0;
+// Reels already shown. No repeats until every cached reel has been shown or Reshuffle is pressed. Persists across opens.
+let shown = new Set(), shownSaveTimer = 0;
+function saveShown() {
+  clearTimeout(shownSaveTimer);
+  shownSaveTimer = setTimeout(() => { chrome.storage.local.set({ shownReels: [...shown] }).catch(() => {}); }, 500);
+}
+function markShown(shortcode) { if (shortcode && !shown.has(shortcode)) { shown.add(shortcode); saveShown(); } }
 let scrollFrame = 0, lastFirst = null, manuallyPaused = new Set(), clearInProgress = false, programmaticUntil = 0;
 const blockers = new Set(['AUTH', 'RATE_LIMIT', 'CHALLENGE', 'FORMAT']);
 const before = document.createElement('div'), after = document.createElement('div');
@@ -48,7 +55,7 @@ function dismissToast() {
 function applyState(next) {
   state = next;
   blocked = next.phase === 'error' && blockers.has(next.code);
-  $('sync-status').textContent = next.message || 'Ready when you are';
+  $('sync-status').textContent = (next.message || 'Ready when you are') + (next.pendingUnsaves && next.phase !== 'syncing' ? ` · ${next.pendingUnsaves} unsave${next.pendingUnsaves === 1 ? '' : 's'} waiting for Refresh` : '');
   $('sync-status').title = next.lastSync ? `Last full refresh: ${new Date(next.lastSync).toLocaleString()}` : 'No complete refresh yet';
   $('status-dot').className = `status-dot ${next.phase === 'syncing' ? 'busy' : next.phase === 'error' ? 'error' : ''}`;
   $('refresh').disabled = next.phase === 'syncing' || clearInProgress;
@@ -119,8 +126,12 @@ async function startRound(manual = false) {
     const previous = order[active]?.shortcode || lastFirst;
     const records = await getReels();
     library = new Map(records.map(r => [r.shortcode, r]));
-    if (manual) unavailable.clear();
-    const playable = records.filter(r => !unavailable.has(r.shortcode));
+    if (manual) { unavailable.clear(); shown.clear(); }
+    for (const code of shown) if (!library.has(code)) shown.delete(code);
+    let playable = records.filter(r => !unavailable.has(r.shortcode) && !shown.has(r.shortcode));
+    // Everything has been shown: start over with the whole library.
+    if (!playable.length) { shown.clear(); playable = records.filter(r => !unavailable.has(r.shortcode)); }
+    saveShown();
     if (!playable.length && records.length) { showUnavailable(); return; }
     dropAll();
     order = shuffle(playable, previous); active = 0; round++;
@@ -207,6 +218,7 @@ function renderWindow(rebuild = false) {
 
 function updateControls() {
   const reel = order[active]; if (!reel) return;
+  markShown(reel.shortcode);
   $('position').replaceChildren();
   $('position').append(document.createTextNode(String(active + 1).padStart(2, '0') + ' '));
   const total = document.createElement('span'); total.textContent = `/ ${String(order.length).padStart(2, '0')}`; $('position').append(total);
@@ -343,7 +355,7 @@ async function unsave() {
   const operation = { undoRequested: false };
   pending.set(reel.shortcode, operation); updateControls();
   const removed = rpc('BOOKMARK', { reel, saved: false });
-  notify('Removed from your saved reels', { undo: async () => {
+  notify('Unsaved · syncs to Instagram on Refresh', { undo: async () => {
     operation.undoRequested = true;
     notify('Restoring your save…', { duration: 12000 });
     try {
@@ -352,7 +364,7 @@ async function unsave() {
       library.set(reel.shortcode, reel);
       if (!order.some(r => r.shortcode === reel.shortcode)) order.splice(Math.min(active + 1, order.length), 0, reel);
       pending.delete(reel.shortcode); await refreshCache();
-      notify('Restored to Instagram and your library');
+      notify('Restored to your library');
     } catch (err) { pending.delete(reel.shortcode); updateControls(); notify(`Couldn’t restore this save. ${err.message}`, { duration: 8000 }); }
   } });
   try {
@@ -364,11 +376,11 @@ async function unsave() {
   }
 }
 
-async function refresh() {
+async function refresh(full = false) {
   try {
     // Only an explicit refresh resumes a halted client. No automatic block retries.
     blocked = false; unavailable.clear();
-    await rpc('SYNC');
+    await rpc('SYNC', { full });
   } catch (err) { notify(err.message); }
 }
 
@@ -413,8 +425,8 @@ document.addEventListener('keydown', event => {
   if (document.querySelector('dialog[open]') || event.ctrlKey || event.metaKey || event.altKey || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
   const key = event.key.toLowerCase();
   if (event.target.closest('button,a') && [' ', 'enter'].includes(key)) return;
-  if (['arrowdown', 'j'].includes(key)) { event.preventDefault(); navigate(1); }
-  else if (['arrowup', 'k'].includes(key)) { event.preventDefault(); navigate(-1); }
+  if (['arrowdown', 'arrowright', 'j'].includes(key)) { event.preventDefault(); navigate(1); }
+  else if (['arrowup', 'arrowleft', 'k'].includes(key)) { event.preventDefault(); navigate(-1); }
   else if (key === 'm') { event.preventDefault(); void toggleMute(); }
   else if (key === ' ') { event.preventDefault(); togglePlay(); }
   else if (key === 'u') { event.preventDefault(); void unsave(); }
@@ -455,7 +467,7 @@ $('settings-form').addEventListener('submit', async event => {
     $('settings-dialog').close(); updateControls();
     for (const card of cards.values()) { const v = card.querySelector('video'); v.muted = settings.muted; if (!settings.autoplay) v.pause(); }
     if (settings.autoplay) playActive();
-    if (previousInclude !== settings.includeNonReels) await refresh();
+    if (previousInclude !== settings.includeNonReels) await refresh(true);
     notify('Preferences saved');
   } catch (err) { notify(err.message); }
 });
@@ -555,6 +567,56 @@ $('export-csv').addEventListener('click', async () => {
   download(exportName('csv'), 'text/csv', csv);
   $('export-dialog').close(); notify(`Exported ${rows.length.toLocaleString()} reels as CSV`);
 });
+// Import: read a ReelShuffle JSON or CSV export and make it the new local library.
+function parseCsv(text) {
+  const rows = []; let row = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  const [header = [], ...body] = rows.filter(r => r.some(Boolean));
+  return body.map(r => Object.fromEntries(header.map((h, i) => [h.trim(), r[i] ?? ''])));
+}
+function importRecord(row) {
+  const fromUrl = /instagram\.com\/(?:reel|reels|p)\/([A-Za-z0-9_-]+)/.exec(String(row.url || ''))?.[1];
+  const saved = row.savedAt === '' || row.savedAt == null ? null
+    : Number.isFinite(Number(row.savedAt)) ? Number(row.savedAt) : Math.floor(Date.parse(row.savedAt) / 1000) || null;
+  return {
+    shortcode: row.shortcode || fromUrl, mediaId: String(row.mediaId ?? ''), author: row.author, caption: row.caption,
+    thumbUrl: row.thumbnailUrl ?? row.thumbUrl, savedAt: saved, kind: row.kind,
+  };
+}
+$('import-open').addEventListener('click', () => $('import-file').click());
+$('import-file').addEventListener('change', async event => {
+  const file = event.target.files?.[0]; event.target.value = '';
+  if (!file) return;
+  try {
+    const text = (await file.text()).replace(/^﻿/, '');
+    let rows;
+    if (/^\s*[[{]/.test(text)) { const data = JSON.parse(text); rows = Array.isArray(data) ? data : data.reels; }
+    else rows = parseCsv(text);
+    if (!Array.isArray(rows) || !rows.length) throw new Error('That file has no reels in it.');
+    if (!confirm(`Replace your current library (${library.size.toLocaleString()} reels) with ${rows.length.toLocaleString()} from "${file.name}"?`)) return;
+    clearTimeout(nextRoundTimer);
+    const result = await rpc('IMPORT', { reels: rows.map(importRecord) });
+    $('export-dialog').close();
+    notify(`Imported ${result.imported.toLocaleString()} reels${result.skipped ? ` · skipped ${result.skipped} invalid` : ''}`);
+  } catch (err) {
+    notify(err instanceof SyntaxError ? 'That file isn’t valid JSON.' : err.message, { duration: 8000 });
+  }
+});
+$('full-refresh').addEventListener('click', () => { $('settings-dialog').close(); void refresh(true); });
+
 $('clear-open').addEventListener('click', () => { $('settings-dialog').close(); $('clear-dialog').showModal(); });
 $('clear-confirm').addEventListener('click', async () => {
   clearInProgress = true; $('clear-confirm').disabled = true; blocked = true;
@@ -562,6 +624,7 @@ $('clear-confirm').addEventListener('click', async () => {
     clearTimeout(nextRoundTimer); dropAll();
     const result = await rpc('CLEAR');
     settings = result.settings; library.clear(); order = []; active = 0; round = 0; pending.clear(); unavailable.clear();
+    shown.clear(); await chrome.storage.local.remove('shownReels');
     $('clear-dialog').close(); updateEmpty(); notify('Local library and preferences cleared');
   } catch (err) { notify(err.message); }
   finally { clearInProgress = false; $('clear-confirm').disabled = false; applyState(state); }
@@ -575,7 +638,8 @@ chrome.runtime.onMessage.addListener(message => {
 
 async function init() {
   try {
-    const [initial, session] = await Promise.all([rpc('GET_STATE'), chrome.storage.session.get('previousFirst')]);
+    const [initial, session, seenStore] = await Promise.all([rpc('GET_STATE'), chrome.storage.session.get('previousFirst'), chrome.storage.local.get('shownReels')]);
+    shown = new Set(Array.isArray(seenStore.shownReels) ? seenStore.shownReels : []);
     settings = initial.settings; lastFirst = session.previousFirst || null; applyState(initial.state);
     await refreshCache();
     // Open from cache. Only Refresh syncs, except the very first time when there is nothing cached yet.

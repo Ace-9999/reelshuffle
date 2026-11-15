@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "fake-indexeddb": "^6.2.8",
-    "playwright": "^1.65.1"
-  }
-}

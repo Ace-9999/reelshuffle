@@ -1,4 +1,4 @@
-import { chromium } from '../.qa/node_modules/playwright/index.mjs';
+import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';

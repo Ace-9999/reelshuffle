@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { indexedDB } from '../.qa/node_modules/fake-indexeddb/build/esm/index.js';
+import { indexedDB } from 'fake-indexeddb';
 globalThis.indexedDB = indexedDB;
 let listener, clickListener;
 const local = {}, session = {}, broadcasts = [], calls = [];
@@ -65,7 +65,12 @@ globalThis.fetch = async (url, options) => {
     const more = (page + 1) * 50 < dataset.length;
     return json({ items, more_available: more, ...(more ? { next_max_id: String(page + 1) } : {}) });
   }
-  if (parsed.pathname.includes('/web/save/')) return mode === 'mutation-fail' ? json({ status: 'fail' }) : json({ status: 'ok' });
+  if (parsed.pathname.includes('/web/save/')) {
+    if (mode === 'mutation-fail') return json({ status: 'fail' });
+    const [, id, action] = /\/web\/save\/(\d+)\/(save|unsave)\//.exec(parsed.pathname);
+    if (action === 'unsave') dataset = dataset.filter(m => m.media.pk !== id);
+    return json({ status: 'ok' });
+  }
   throw new Error('Unexpected test endpoint');
 };
 await import('../ReelShuffle/background.js');
@@ -82,7 +87,7 @@ const waitSync = async () => {
 
 test('full worker flow: 2,000 reels, pagination, partial failure, reconcile, bookmarks and launch', async () => {
   dataset = Array.from({ length: 2000 }, (_, i) => media(i));
-  await send('SYNC');
+  await send('SYNC', { full: true });
   let state = await waitSync();
   assert.equal(state.phase, 'ready'); assert.equal((await db.getReels()).length, 2000);
   assert.equal(calls.filter(c => c.url.includes('feed/saved')).length, 40);
@@ -91,36 +96,67 @@ test('full worker flow: 2,000 reels, pagination, partial failure, reconcile, boo
   console.log('Full 40-page sync completed and incremental progress was broadcast');
 
   mode = 'partial-format'; dataset = Array.from({ length: 100 }, (_, i) => media(3000 + i));
-  await send('SYNC'); state = await waitSync();
+  await send('SYNC', { full: true }); state = await waitSync();
   assert.equal(state.code, 'FORMAT'); assert.equal((await db.getReels()).length, 2050);
   assert.ok(await db.getMeta('lastSync'));
   console.log('Malformed second page kept every old record and valid first-page additions');
 
   mode = 'full'; dataset = [media(3001), media(3002)];
-  await send('SYNC'); state = await waitSync();
+  await send('SYNC', { full: true }); state = await waitSync();
   assert.equal(state.phase, 'ready'); assert.equal((await db.getReels()).length, 2);
-  const reel = (await db.getReels())[0];
+  console.log('Complete refresh reconciled the cache down to the current saved list');
+
+  // Normal refresh: newest first, stops at the first page that contains an already cached reel.
+  dataset = [...Array.from({ length: 120 }, (_, i) => media(6000 + i)), media(3001), media(3002), ...Array.from({ length: 200 }, (_, i) => media(7000 + i))];
+  const savedCalls = () => calls.filter(c => c.url.includes('feed/saved')).length;
+  let beforePages = savedCalls();
+  await send('SYNC'); state = await waitSync();
+  assert.equal(state.phase, 'ready'); assert.equal(savedCalls() - beforePages, 3);
+  const cachedCodes = new Set((await db.getReels()).map(r => r.shortcode));
+  assert.ok(cachedCodes.has('Worker_6000') && cachedCodes.has('Worker_6119') && !cachedCodes.has('Worker_7100'));
+  console.log('Incremental refresh stopped at the newest cached reel after 3 pages');
+
+  // Unsave is local until Refresh; Undo never touches Instagram.
+  const saveCalls = () => calls.filter(c => c.url.includes('/web/save/')).length;
+  const reel = (await db.getReels()).find(r => r.shortcode === 'Worker_3001');
+  const beforeSaves = saveCalls(), cachedCount = (await db.getReels()).length;
+  assert.equal((await send('BOOKMARK', { reel, saved: false })).ok, true);
+  assert.equal((await db.getReels()).length, cachedCount - 1); assert.equal(saveCalls(), beforeSaves);
+  assert.equal((await send('GET_STATE')).data.state.pendingUnsaves, 1);
+  assert.equal((await send('BOOKMARK', { reel, saved: true })).ok, true);
+  assert.equal((await db.getReels()).length, cachedCount); assert.equal((await send('GET_STATE')).data.state.pendingUnsaves, 0);
+  assert.equal((await send('BOOKMARK', { reel, saved: false })).ok, true);
   mode = 'mutation-fail';
-  const failure = await send('BOOKMARK', { reel, saved: false }); assert.equal(failure.ok, false);
-  assert.equal((await db.getReels()).length, 2);
+  await send('SYNC'); state = await waitSync();
+  assert.equal(state.phase, 'error'); assert.equal(state.pendingUnsaves, 1);
+  assert.equal(saveCalls(), beforeSaves + 1);
   mode = 'full';
-  assert.equal((await send('BOOKMARK', { reel, saved: false })).ok, true); assert.equal((await db.getReels()).length, 1);
-  assert.equal((await send('BOOKMARK', { reel, saved: true })).ok, true); assert.equal((await db.getReels()).length, 2);
-  console.log('Successful reconciliation, failure rollback, unsave and restore verified');
+  await send('SYNC'); state = await waitSync();
+  assert.equal(state.phase, 'ready'); assert.equal(state.pendingUnsaves, 0);
+  assert.equal(saveCalls(), beforeSaves + 2); assert.match(calls.filter(c => c.url.includes('/web/save/')).at(-1).url, /\/103001\/unsave\//);
+  assert.ok(!(await db.getReels()).some(r => r.shortcode === 'Worker_3001'));
+  console.log('Queued unsave survived a failed Refresh and was applied on the next one');
 
   mode = 'repeat'; dataset = Array.from({ length: 100 }, (_, i) => media(i));
   const beforeRepeat = calls.length;
-  await send('SYNC'); state = await waitSync();
+  await send('SYNC', { full: true }); state = await waitSync();
   assert.equal(state.code, 'FORMAT'); assert.equal(calls.length - beforeRepeat, 2);
   console.log('Repeated cursor halted sync without an endless request loop');
 
   mode = 'full'; dataset = Array.from({ length: 120 }, (_, i) => media(5000 + i));
+  const beforeOpen = (await db.getReels()).length;
   listener({ type: 'SAVED_PAGE_OPENED' }, { id: 'fixture', tab: { id: 42, url: igTab.url } }, () => {});
   for (let i = 0; i < 50 && (await send('GET_STATE')).data.state.phase !== 'syncing'; i++) await new Promise(r => setImmediate(r));
   state = await waitSync();
-  assert.equal(state.phase, 'ready'); assert.equal((await db.getReels()).length, 120);
+  assert.equal(state.phase, 'ready'); assert.equal((await db.getReels()).length, beforeOpen + 120);
   assert.ok(tabStatus.includes('syncing') && tabStatus.at(-1) === 'ready');
-  console.log('Opening the Instagram Saved page synced the full library through that tab');
+  console.log('Opening the Instagram Saved page synced new saves through that tab');
+
+  // Import replaces the whole cache.
+  const imported = await send('IMPORT', { reels: [{ shortcode: 'Imported_1', mediaId: '42', author: 'a', kind: 'video' }, { shortcode: 'bad shortcode!' }] });
+  assert.equal(imported.ok, true); assert.equal(imported.data.imported, 1); assert.equal(imported.data.skipped, 1);
+  assert.deepEqual((await db.getReels()).map(r => r.shortcode), ['Imported_1']);
+  console.log('Import replaced the cache and skipped invalid rows');
 
   const external = listener({ type: 'CLEAR' }, { id: 'not-our-extension', url: 'https://evil.example/' }, () => { throw new Error('External sender accepted'); });
   assert.equal(external, false);

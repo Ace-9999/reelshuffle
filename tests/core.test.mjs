@@ -1,6 +1,6 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { indexedDB } from '../.qa/node_modules/fake-indexeddb/build/esm/index.js';
+import { indexedDB } from 'fake-indexeddb';
 import { shuffle, cleanRecord, safeMediaUrl, settingsWithDefaults } from '../ReelShuffle/lib/model.js';
 import { InstagramClient, parseSavedPage, parseVideo } from '../ReelShuffle/lib/instagram.js';
 globalThis.indexedDB = indexedDB;
