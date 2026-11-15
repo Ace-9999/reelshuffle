@@ -51,7 +51,7 @@ async function ensureSession(force = false) {
     }
     await setMeta('owner', user.id);
     verified = true;
-    await updateState({ username: user.username });
+    if (user.username) await updateState({ username: user.username });
   })();
   try { await sessionPromise; } finally { sessionPromise = null; }
 }
@@ -173,9 +173,11 @@ async function handle(message) {
 }
 
 // Opening your Saved page on instagram.com syncs the full saved library from that tab.
-async function savedPageOpened(tabId) {
+async function savedPageOpened(tabId, path) {
   await ready;
   transport.prefer(tabId);
+  const username = /^\/([A-Za-z0-9._]{1,30})\/saved(\/|$)/.exec(String(path || ''))?.[1];
+  if (username && username !== state.username) await updateState({ username });
   if (syncPromise) { transport.notify(state); return; }
   const recent = state.phase === 'ready' && state.lastSync && Date.now() - state.lastSync < 60000;
   if (recent) { transport.notify(state); return; }
@@ -184,7 +186,7 @@ async function savedPageOpened(tabId) {
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id === chrome.runtime.id && sender.tab?.url?.startsWith('https://www.instagram.com/')) {
-    if (message?.type === 'SAVED_PAGE_OPENED') void savedPageOpened(sender.tab.id);
+    if (message?.type === 'SAVED_PAGE_OPENED') void savedPageOpened(sender.tab.id, message.path);
     return false;
   }
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL('feed.html')) || typeof message?.type !== 'string') return false;

@@ -73,7 +73,7 @@
   function checkPage() {
     if (location.pathname === lastPath) return;
     lastPath = location.pathname;
-    if (SAVED_PAGE.test(lastPath)) chrome.runtime.sendMessage({ type: 'SAVED_PAGE_OPENED' }).catch(() => {});
+    if (SAVED_PAGE.test(lastPath)) chrome.runtime.sendMessage({ type: 'SAVED_PAGE_OPENED', path: lastPath }).catch(() => {});
   }
   checkPage();
   setInterval(checkPage, 1000);

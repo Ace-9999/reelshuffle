@@ -40,7 +40,7 @@ await maker.close();
 const video = Buffer.from(video64, 'base64');
 const makeFixture = i => ({ media: { pk: String(1000 + i), code: `Fixture_${i}`, media_type: 2, user: { username: ['the.wandering.frame','slowmornings','somewhere.outside'][i % 3] }, caption: { text: ['Some places make you forget to check your phone. A quiet morning, a long way from the rush.','Keeping a little room for the things worth coming back to.','A different view. The same feeling.'][i % 3] }, image_versions2: { candidates: [{ url: 'https://scontent.cdninstagram.com/fixture.jpg' }] } } });
 let fixtures = Array.from({ length: 45 }, (_, i) => makeFixture(i));
-await context.addCookies([{ name: 'csrftoken', value: 'fixture-only', domain: '.instagram.com', path: '/', secure: true, sameSite: 'None' }]);
+await context.addCookies(['csrftoken', 'sessionid', 'ds_user_id'].map(name => ({ name, value: name === 'ds_user_id' ? '99999' : 'fixture-only', domain: '.instagram.com', path: '/', secure: true, sameSite: 'None' })));
 // A stand-in instagram.com: HTML pages get the real content script; /api/v1/ calls are answered here.
 // Every API request must arrive as a same-origin call from the instagram.com tab, never from the extension origin.
 const fixture = { mode: 'normal', requests: [], mutations: [], fixtures, pages: 0, origins: new Set() };
@@ -54,10 +54,7 @@ await context.route('https://www.instagram.com/**', async route => {
   assert.equal(headers['x-csrftoken'], 'fixture-only');
   assert.doesNotMatch(headers.origin || '', /^chrome-extension:/);
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-  if (url.includes('/accounts/current_user/')) {
-    if (mode === 'auth') return json({}, 401);
-    return json({ status: 'ok', user: { pk: '99999', username: 'your.library' } });
-  }
+  if (mode === 'auth') return json({ message: 'login_required', status: 'fail' }, 401);
   if (url.includes('/feed/saved/posts/')) {
     fixture.pages++;
     if (mode === '429') return json({}, 429);
@@ -80,14 +77,22 @@ assert.ok(fixture.pages > 0, 'Opening the Saved page did not start a sync');
 console.log('Opening instagram.com/<user>/saved/ started a sync through the Instagram tab');
 const setMode = value => { fixture.mode = value; };
 const getRequests = async () => fixture.requests;
-await context.route('https://**.cdninstagram.com/**', route => route.fulfill({ status: 200, contentType: route.request().url().endsWith('.webm') ? 'video/webm' : 'image/svg+xml', body: route.request().url().endsWith('.webm') ? video : artwork }));
+// Like a real CDN, the fixture video supports byte ranges, so looping (a seek back to 0) works.
+await context.route('https://**.cdninstagram.com/**', route => {
+  if (!route.request().url().endsWith('.webm')) return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: artwork });
+  const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range || '');
+  if (!range) return route.fulfill({ status: 200, contentType: 'video/webm', headers: { 'Accept-Ranges': 'bytes' }, body: video });
+  const start = Number(range[1]), end = range[2] ? Math.min(Number(range[2]), video.length - 1) : video.length - 1;
+  return route.fulfill({ status: 206, contentType: 'video/webm', headers: { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${video.length}` }, body: video.subarray(start, end + 1) });
+});
 
 const page = await context.newPage();
 page.on('pageerror', err => errors.push(err.message));
 page.on('console', msg => { if (msg.type() === 'error') console.log('Browser console:', msg.text()); });
 process.on('uncaughtException', async err => {
   console.error(err);
-  console.error('Requests:', requests, 'Errors:', errors);
+  console.error('Requests:', fixture.requests.map(u => new URL(u).pathname).slice(-15), 'Errors:', errors);
+  try { console.error('Videos:', JSON.stringify(await page.evaluate(() => [...document.querySelectorAll('video')].map(v => [v.src.slice(0, 60), v.error?.code, v.error?.message, v.readyState, v.networkState])))); } catch {}
   try { console.error(await page.locator('body').innerText()); await page.screenshot({ path: path.join(root, 'qa-output/failure.png') }); } catch {}
   await context.close(); process.exit(1);
 });
@@ -100,7 +105,7 @@ console.log('Synced first page and autoplayed fixture video');
 
 assert.ok(await page.locator('.reel-card').count() <= 4);
 assert.ok(await page.locator('video[src]').count() <= 3);
-assert.equal(await page.locator('video').evaluateAll(v => v.filter(x => !x.paused).length), 1);
+await page.waitForFunction(() => [...document.querySelectorAll('video')].filter(v => !v.paused).length === 1, null, { timeout: 10000 });
 const initialOrder = await page.locator('.reel-card').first().getAttribute('data-shortcode');
 await page.screenshot({ path: path.join(root, 'qa-output/feed-desktop.png') });
 await page.keyboard.press('j');

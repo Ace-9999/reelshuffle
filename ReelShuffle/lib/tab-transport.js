@@ -75,6 +75,7 @@ export function createTabTransport({ tabs = chrome.tabs, scripting = chrome.scri
     if (!result || result.error) throw new Error(result?.error || 'No response from Instagram tab');
     return {
       status: result.status, ok: result.status >= 200 && result.status < 300, url: result.url,
+      contentKind: /^\s*</.test(result.text) ? 'HTML page' : result.text.trim() ? 'non-JSON text' : 'empty body',
       async json() { return JSON.parse(result.text); },
     };
   }

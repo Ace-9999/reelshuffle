@@ -453,6 +453,39 @@ $('settings-form').addEventListener('submit', async event => {
     notify('Preferences saved');
   } catch (err) { notify(err.message); }
 });
+// Export: every cached record, with its Instagram link, as JSON or CSV.
+async function exportRows() {
+  const records = await getReels();
+  return records.map(r => ({
+    url: `https://www.instagram.com/${r.kind === 'image' ? 'p' : 'reel'}/${r.shortcode}/`,
+    shortcode: r.shortcode, mediaId: r.mediaId, author: r.author, caption: r.caption, kind: r.kind,
+    thumbnailUrl: r.thumbUrl || '', savedAt: r.savedAt ? new Date(r.savedAt * (r.savedAt < 1e12 ? 1000 : 1)).toISOString() : '',
+  }));
+}
+function download(name, type, text) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+const exportName = ext => `reelshuffle-saved-${new Date().toISOString().slice(0, 10)}.${ext}`;
+$('export-open').addEventListener('click', async () => {
+  $('export-count').textContent = `${(await getReels()).length.toLocaleString()} items in your library.`;
+  $('export-dialog').showModal();
+});
+$('export-json').addEventListener('click', async () => {
+  const rows = await exportRows();
+  download(exportName('json'), 'application/json', JSON.stringify({ exportedAt: new Date().toISOString(), count: rows.length, reels: rows }, null, 2));
+  $('export-dialog').close(); notify(`Exported ${rows.length.toLocaleString()} reels as JSON`);
+});
+$('export-csv').addEventListener('click', async () => {
+  const rows = await exportRows();
+  const columns = ['url', 'author', 'caption', 'kind', 'savedAt', 'shortcode', 'mediaId', 'thumbnailUrl'];
+  const cell = v => /[",\r\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+  const csv = '﻿' + [columns.join(','), ...rows.map(r => columns.map(c => cell(r[c] ?? '')).join(','))].join('\r\n');
+  download(exportName('csv'), 'text/csv', csv);
+  $('export-dialog').close(); notify(`Exported ${rows.length.toLocaleString()} reels as CSV`);
+});
 $('clear-open').addEventListener('click', () => { $('settings-dialog').close(); $('clear-dialog').showModal(); });
 $('clear-confirm').addEventListener('click', async () => {
   clearInProgress = true; $('clear-confirm').disabled = true; blocked = true;

@@ -5,7 +5,6 @@ import { cleanRecord, safeMediaUrl } from './model.js';
 const ORIGIN = 'https://www.instagram.com';
 const APP_ID = '936619743392459';
 const PATHS = {
-  session: '/api/v1/accounts/current_user/?edit=true',
   saved: '/api/v1/feed/saved/posts/',
   info: id => `/api/v1/media/${id}/info/`,
   bookmark: (id, saved) => `/api/v1/web/save/${id}/${saved ? 'save' : 'unsave'}/`,
@@ -17,12 +16,19 @@ export class InstagramError extends Error {
 const error = (code, message) => new InstagramError(code, message);
 export function formatError(context) {
   // Deliberately avoid response bodies, cookies, tokens and signed URLs in logs.
+  // The context only names fields and status codes, so it is safe to show and lets a format change be diagnosed.
   console.warn(`[ReelShuffle] Unexpected Instagram response structure: ${context}`);
-  return error('FORMAT', 'Instagram changed its format. Your cached feed is still here.');
+  return error('FORMAT', `Instagram changed its format (${context}). Your cached feed is still here.`);
+}
+// Top-level field names only, never values.
+export function shape(body) {
+  if (body === null || typeof body !== 'object') return `got ${body === null ? 'null' : typeof body}`;
+  const keys = Object.keys(body).slice(0, 8);
+  return keys.length ? `got fields: ${keys.join(', ')}` : 'got an empty object';
 }
 
 export function parseSavedPage(body, includeNonReels = false) {
-  if (!body || !Array.isArray(body.items)) throw formatError('saved.items is not an array');
+  if (!body || !Array.isArray(body.items)) throw formatError(`saved list has no items, ${shape(body)}`);
   const reels = [];
   let skipped = 0;
   for (const entry of body.items) {
@@ -59,7 +65,7 @@ export function parseSavedPage(body, includeNonReels = false) {
 
 export function parseVideo(body) {
   const media = body?.items?.[0];
-  if (!media) throw formatError('media info has no items');
+  if (!media) throw formatError(`media info has no items, ${shape(body)}`);
   const primary = Number(media.media_type) === 8 ? media.carousel_media?.[0] : media;
   if (!primary) throw formatError('media info has no primary item');
   if (Number(primary.media_type) === 1) {
@@ -124,7 +130,7 @@ export class InstagramClient {
       let body;
       try { body = await response.json(); } catch {
         if (response.status === 403) throw await this.halt(error('CHALLENGE', 'Instagram blocked this request. Open Instagram and wait before trying again.'));
-        throw await this.halt(formatError('expected JSON response'));
+        throw await this.halt(formatError(`expected JSON, got HTTP ${response.status} ${response.contentKind || 'non-JSON body'}`));
       }
       const message = String(body?.message || '').toLowerCase();
       if (body?.challenge || body?.checkpoint_url || /challenge|checkpoint|feedback_required|consent_required/.test(message)) throw await this.halt(error('CHALLENGE', 'Instagram needs your attention. Open Instagram and wait before trying again.'));
@@ -138,10 +144,16 @@ export class InstagramClient {
     this.queue = result.catch(() => {});
     return result;
   }
+  // Login state comes from the session cookies themselves (presence only; values are never stored or sent anywhere).
+  // The saved-list request that follows is the real authenticated check: a logged-out session fails it with AUTH.
   async session() {
-    const body = await this.request(PATHS.session);
-    if (!body?.user?.pk) throw await this.halt(formatError('current_user has no user ID'));
-    return { id: String(body.user.pk), username: String(body.user.username || '') };
+    await this.assertAllowed();
+    const [sessionCookie, userCookie] = await Promise.all([
+      this.cookies.get({ url: ORIGIN, name: 'sessionid' }),
+      this.cookies.get({ url: ORIGIN, name: 'ds_user_id' }),
+    ]);
+    if (!sessionCookie?.value || !/^\d+$/.test(userCookie?.value || '')) throw await this.halt(error('AUTH', 'Log in to Instagram in this Chrome profile to continue.'));
+    return { id: userCookie.value, username: '' };
   }
   async saved(cursor, includeNonReels, before) {
     const query = new URLSearchParams({ count: '50', ...(cursor ? { max_id: cursor } : {}) });

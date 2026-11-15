@@ -10,7 +10,7 @@ const media = (i, type = 2) => ({ pk: String(i), code: `REEL_${i}`, media_type: 
 function harness(responses) {
   const stored = {}, calls = []; let time = 10000, waits = [];
   const storage = { async get(k) { return { [k]: stored[k] }; }, async set(v) { Object.assign(stored, v); }, async remove(k) { delete stored[k]; } };
-  const cookies = { async get() { return { value: 'test-csrf-not-real' }; } };
+  const cookies = { async get({ name }) { return { value: name === 'ds_user_id' ? '12345' : 'test-csrf-not-real' }; } };
   const fetcher = async (url, options) => {
     calls.push({ url, options, time });
     const next = responses.shift();
@@ -42,7 +42,7 @@ test('saved parser skips photos/carousels by default and validates pagination', 
   assert.equal(parsed.reels[0].caption.length, 200); assert.equal(parsed.reels[0].savedAt, null);
   assert.equal(parseSavedPage(body, true).reels.length, 3);
   assert.throws(() => parseSavedPage({ items: [], more_available: true }), { code: 'FORMAT' });
-  assert.throws(() => parseSavedPage({ something_else: [] }), { code: 'FORMAT' });
+  assert.throws(() => parseSavedPage({ something_else: [] }), { code: 'FORMAT', message: /got fields: something_else/ });
   const odd = parseSavedPage({ items: [{ media: media(5) }, { media: { media_type: 99 } }, { media: { media_type: 2 } }, null], more_available: false });
   assert.equal(odd.reels.length, 1); assert.equal(odd.skipped, 3); assert.equal(odd.cursor, null);
 });
@@ -64,8 +64,8 @@ test('cache handles 2,000 records and clear removes records and metadata', async
   assert.equal((await db.getReels()).length, 0); assert.equal(await db.getMeta('owner'), undefined);
 });
 test('all calls are serialized and at least 1.5 seconds apart', async () => {
-  const h = harness([{ body: { user: { pk: '1' } } }, { body: { items: [], more_available: false } }, { body: { status: 'ok' } }]);
-  await Promise.all([h.client.session(), h.client.saved(null, false), h.client.bookmark('1', false)]);
+  const h = harness([{ body: { items: [], more_available: false } }, { body: { items: [{ media_type: 2, video_versions: [{ url: 'https://v.cdninstagram.com/a' }] }] } }, { body: { status: 'ok' } }]);
+  await Promise.all([h.client.session(), h.client.saved(null, false), h.client.resolve('1'), h.client.bookmark('1', false)]);
   assert.deepEqual(h.calls.map(c => c.time), [10000, 11500, 13000]);
   assert.equal(h.calls[2].options.credentials, 'include'); assert.match(h.calls[2].url, /\/api\/v1\/web\/save\/1\/unsave\//);
   assert.equal(JSON.stringify(h.stored).includes('test-csrf-not-real'), false);

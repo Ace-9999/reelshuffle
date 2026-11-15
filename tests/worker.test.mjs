@@ -18,7 +18,7 @@ const feedUrl = 'chrome-extension://fixture/feed.html';
 let focused, created;
 const igTab = { id: 42, url: 'https://www.instagram.com/test/saved/', status: 'complete' }, tabStatus = [];
 globalThis.chrome = {
-  cookies: { async get() { return { value: 'fixture' }; } },
+  cookies: { async get({ name }) { return { value: name === 'ds_user_id' ? '777' : 'fixture' }; } },
   storage: { local: storage(local), session: storage(session) },
   runtime: {
     id: 'fixture', getURL: name => `chrome-extension://fixture/${name}`,
@@ -111,7 +111,7 @@ test('full worker flow: 2,000 reels, pagination, partial failure, reconcile, boo
   mode = 'repeat'; dataset = Array.from({ length: 100 }, (_, i) => media(i));
   const beforeRepeat = calls.length;
   await send('SYNC'); state = await waitSync();
-  assert.equal(state.code, 'FORMAT'); assert.equal(calls.length - beforeRepeat, 3);
+  assert.equal(state.code, 'FORMAT'); assert.equal(calls.length - beforeRepeat, 2);
   console.log('Repeated cursor halted sync without an endless request loop');
 
   mode = 'full'; dataset = Array.from({ length: 120 }, (_, i) => media(5000 + i));
