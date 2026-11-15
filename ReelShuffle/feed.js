@@ -8,7 +8,7 @@ let cards = new Map(), assets = new Map(), unavailable = new Set(), pending = ne
 let blocked = false, switchingRound = false, refreshingCache = false, refreshAgain = false;
 let toastTimer, undoTimer, undoAction, nextRoundTimer, wheelAt = 0, wheelDelta = 0;
 // Reels already shown. No repeats until every cached reel has been shown or Reshuffle is pressed. Persists across opens.
-let shown = new Set(), shownSaveTimer = 0;
+let shown = new Set(), shownSaveTimer = 0, fastFor = null;
 function saveShown() {
   clearTimeout(shownSaveTimer);
   shownSaveTimer = setTimeout(() => { chrome.storage.local.set({ shownReels: [...shown] }).catch(() => {}); }, 500);
@@ -177,7 +177,8 @@ function makeCard(reel, index) {
   const metadata = document.createElement('div'); metadata.className = 'card-metadata';
   const author = document.createElement('div'); author.className = 'author-line';
   const avatar = document.createElement('span'); avatar.className = 'author-avatar'; avatar.textContent = reel.author.slice(0, 1);
-  const username = document.createElement('span'); username.textContent = `@${reel.author}`;
+  const username = document.createElement('a'); username.className = 'author-link'; username.textContent = `@${reel.author}`;
+  username.href = `https://www.instagram.com/${encodeURIComponent(reel.author)}/`; username.target = '_blank'; username.rel = 'noopener noreferrer';
   author.append(avatar, username);
   const caption = document.createElement('p'); caption.className = 'caption'; caption.textContent = reel.caption;
   const savedTag = document.createElement('div'); savedTag.className = 'saved-tag';
@@ -186,7 +187,25 @@ function makeCard(reel, index) {
   const progress = document.createElement('div'); progress.className = 'video-progress'; progress.innerHTML = '<span></span>';
   const loading = document.createElement('span'); loading.className = 'loading-label'; loading.textContent = 'Getting your reel ready';
   card.append(video, image, overlay, metadata, progress, loading);
-  video.addEventListener('timeupdate', () => { progress.firstChild.style.width = `${Number.isFinite(video.duration) && video.duration ? video.currentTime / video.duration * 100 : 0}%`; });
+  // Click or drag the bar to seek (mouse only).
+  const seekTo = event => {
+    if (!Number.isFinite(video.duration) || !video.duration) return;
+    const rect = progress.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    video.currentTime = ratio * video.duration;
+    progress.firstChild.style.width = `${ratio * 100}%`;
+  };
+  progress.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    event.preventDefault(); event.stopPropagation();
+    progress.setPointerCapture(event.pointerId); progress.classList.add('seeking'); seekTo(event);
+  });
+  progress.addEventListener('pointermove', event => { if (progress.hasPointerCapture(event.pointerId)) seekTo(event); });
+  const endSeek = event => { if (progress.hasPointerCapture(event.pointerId)) progress.releasePointerCapture(event.pointerId); progress.classList.remove('seeking'); };
+  progress.addEventListener('pointerup', endSeek); progress.addEventListener('pointercancel', endSeek);
+  progress.addEventListener('click', event => event.stopPropagation());
+  video.addEventListener('timeupdate', () => {
+    if (progress.classList.contains('seeking')) return; progress.firstChild.style.width = `${Number.isFinite(video.duration) && video.duration ? video.currentTime / video.duration * 100 : 0}%`; });
   video.addEventListener('play', () => overlay.classList.remove('paused'));
   video.addEventListener('pause', () => overlay.classList.add('paused'));
   video.addEventListener('loadeddata', () => { loading.hidden = true; if (reel.shortcode === order[active]?.shortcode) playActive(); });
@@ -219,6 +238,11 @@ function renderWindow(rebuild = false) {
 function updateControls() {
   const reel = order[active]; if (!reel) return;
   markShown(reel.shortcode);
+  // 2x only lasts for the reel it was turned on for.
+  if (fastFor && fastFor !== reel.shortcode) fastFor = null;
+  for (const [key, card] of cards) { const v = card.querySelector('video'); if (v) v.playbackRate = key === fastFor ? 2 : 1; }
+  $('speed').setAttribute('aria-pressed', String(fastFor === reel.shortcode));
+  $('speed').classList.toggle('on', fastFor === reel.shortcode);
   $('position').replaceChildren();
   $('position').append(document.createTextNode(String(active + 1).padStart(2, '0') + ' '));
   const total = document.createElement('span'); total.textContent = `/ ${String(order.length).padStart(2, '0')}`; $('position').append(total);
@@ -318,6 +342,7 @@ function playActive(force = false) {
   if (!video || video.hidden || !video.hasAttribute('src') || document.hidden) return;
   if (!force && (!settings.autoplay || manuallyPaused.has(reel.shortcode))) return;
   video.muted = settings.muted;
+  video.playbackRate = fastFor === reel.shortcode ? 2 : 1;
   const attempt = video.play();
   attempt?.catch(err => {
     if (err.name === 'NotAllowedError') cards.get(reel.shortcode)?.querySelector('.play-overlay').classList.add('paused');
@@ -531,6 +556,11 @@ function toggleComments(show = $('comments-panel').hidden) {
   if (!show) feed.focus({ preventScroll: true });
 }
 $('comments-open').addEventListener('click', () => toggleComments());
+$('speed').addEventListener('click', () => {
+  const reel = order[active]; if (!reel) return;
+  fastFor = fastFor === reel.shortcode ? null : reel.shortcode;
+  updateControls();
+});
 $('comments-close').addEventListener('click', () => toggleComments(false));
 $('comments-more').addEventListener('click', () => void loadComments());
 

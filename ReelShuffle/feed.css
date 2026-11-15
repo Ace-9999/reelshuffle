@@ -52,3 +52,19 @@ main{display:flex;justify-content:center;align-items:center;height:100vh;height:
 .action-rail{right:-78px;bottom:110px}
 .import-heading{font-size:15px;margin:22px 0 4px}
 @media(max-width:520px){.player-shell{width:calc(100vw - 76px);margin-right:60px}.action-rail{right:-62px}}
+
+/* Seek bar: click or drag. Bigger invisible hit area, thicker on hover. */
+.video-progress{overflow:visible;cursor:pointer;height:3px;touch-action:none}
+.video-progress::before{content:"";position:absolute;inset:-9px 0}
+.video-progress span{position:relative;border-radius:2px}
+.video-progress:hover,.video-progress.seeking{height:5px}
+.video-progress.seeking span{transition:none}
+.video-progress span::after{content:"";position:absolute;right:-6px;top:50%;width:12px;height:12px;margin-top:-6px;border-radius:50%;background:#fff;opacity:0;transition:opacity .15s}
+.video-progress:hover span::after,.video-progress.seeking span::after{opacity:1}
+/* Author name links to their profile. */
+.author-link{color:inherit;text-decoration:none;pointer-events:auto}
+.author-link:hover{text-decoration:underline}
+/* 2x speed toggle. */
+.rail-button .speed-label{font-size:13px;font-weight:700;letter-spacing:-.3px}
+#speed.on>span{background:#c3cbff;color:#141626;border-color:#c3cbff}
+#speed.on small{color:#c3cbff}
