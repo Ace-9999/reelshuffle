@@ -22,3 +22,9 @@ main{display:flex;justify-content:center;align-items:center;height:100vh;height:
 .banner{top:68px}
 .toast{bottom:28px}
 @media(max-width:620px){.top-status{display:none}.topbar .brand{font-size:16px}}
+/* Caption, seek bar and side buttons only show while the cursor is over the reel (mouse devices only). */
+@media(hover:hover){
+.action-rail,.card-metadata,.video-progress,.reel-card:after{transition:opacity .25s ease}
+.player-shell:not(:hover):not(:has(:focus-visible)) :is(.action-rail,.card-metadata,.video-progress),
+.player-shell:not(:hover):not(:has(:focus-visible)) .reel-card:after{opacity:0;pointer-events:none}
+}
