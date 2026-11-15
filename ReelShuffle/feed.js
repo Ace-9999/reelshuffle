@@ -393,8 +393,10 @@ feed.addEventListener('scrollend', () => {
     feed.scrollTo({ top, behavior: reduceMotion ? 'instant' : 'smooth' });
   }
 });
-feed.addEventListener('wheel', event => {
+// Wheel anywhere on the page (not just over the reel) moves between reels.
+window.addEventListener('wheel', event => {
   if (event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  if ($('player-shell').hidden || !order.length || document.querySelector('dialog[open]')) return;
   event.preventDefault();
   if (Date.now() - wheelAt < 520) return;
   wheelDelta += event.deltaY;
