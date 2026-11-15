@@ -19,7 +19,7 @@ const ready = (async () => {
   state.lastSync = await getMeta('lastSync') || null;
   const previous = (await chrome.storage.session.get('state')).state;
   if (previous?.phase === 'error') state = { ...previous, lastSync: state.lastSync };
-  else if (previous?.phase === 'syncing') state.message = 'Refresh interrupted. Open the feed to resume.';
+  else if (previous?.phase === 'syncing') state.message = 'Refresh interrupted. Press Refresh to finish it.';
 })();
 
 function broadcast(message) { chrome.runtime.sendMessage(message).catch(() => {}); }

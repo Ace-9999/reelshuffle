@@ -578,7 +578,8 @@ async function init() {
     const [initial, session] = await Promise.all([rpc('GET_STATE'), chrome.storage.session.get('previousFirst')]);
     settings = initial.settings; lastFirst = session.previousFirst || null; applyState(initial.state);
     await refreshCache();
-    await rpc('SYNC');
+    // Open from cache. Only Refresh syncs, except the very first time when there is nothing cached yet.
+    if (library.size === 0 && !state.lastSync && state.phase !== 'syncing') await rpc('SYNC');
     // Update cooldown controls without making requests.
     setInterval(() => { if (state.retryAt && state.retryAt <= Date.now()) { $('banner-resume').disabled = false; $('empty-retry').disabled = false; } }, 1000);
   } catch (err) {
