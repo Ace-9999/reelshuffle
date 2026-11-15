@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>ReelShuffle · Your saved, rediscovered</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="feed.css">
+  <script type="module" src="feed.js"></script>
+</head>
+<body>
+  <svg class="svg-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M3 6h3c5 0 7 12 12 12h3m-4-4 4 4-4 4M3 18h3c2 0 3.5-2 5-5m2-3c1.5-2.5 3-4 5-4h3m-4-4 4 4-4 4"/></symbol>
+    <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="m11 4-6 5H2v6h3l6 5zM15 8a6 6 0 0 1 0 8m3-12a11 11 0 0 1 0 16"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="m11 4-6 5H2v6h3l6 5zM16 9l6 6m0-6-6 6"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L10 14M9 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7a9 9 0 1 0 1 8M20 2v6h-6"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="m9 3-1 3-3 1-2 3 2 2v3l3 1 1 3h5l1-3 3-1v-3l2-2-2-3-3-1-1-3z"/><circle cx="11.5" cy="11" r="3"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m5 9 7 7 7-7"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 13 8-13 8z"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  </defs></svg>
+  <header class="topbar">
+    <a class="brand" href="feed.html" aria-label="ReelShuffle home"><span class="brand-mark"><svg><use href="#i-shuffle"/></svg></span>Reel<span class="brand-light">Shuffle</span><span class="personal-label">PERSONAL LIBRARY</span></a>
+    <div class="top-actions"><span id="saved-count" class="count">0 saved</span><span class="top-divider"></span><button id="refresh" class="button subtle" title="Refresh saved library"><svg><use href="#i-refresh"/></svg><span>Refresh</span></button><button id="settings-open" class="icon-button" aria-label="Open settings" title="Settings"><svg><use href="#i-settings"/></svg></button></div>
+  </header>
+  <main>
+    <aside class="intro" aria-label="About your library"><div class="eyebrow"><span></span> A SECOND LOOK</div><h1>Good saves.<br>Great rediscoveries.</h1><p>The reels you meant to come back to.<br>A little less searching, a little more watching.</p><div class="session-note"><span class="status-dot" id="status-dot"></span><span id="sync-status" role="status">Opening your library…</span></div><button id="cancel-sync" class="text-button" hidden>Pause refresh</button><p class="local-note">Just your saves. Just your browser.</p></aside>
+    <section id="player-shell" class="player-shell" aria-label="Saved reels player" hidden>
+      <div class="player-top"><span class="playing-label"><span></span> FROM YOUR SAVES</span><span id="round-label">ROUND 01</span></div>
+      <div id="feed" class="feed" tabindex="0" aria-label="Shuffled saved feed. Arrow keys or J and K to navigate."></div>
+      <div class="round-card" id="round-card" hidden><svg><use href="#i-shuffle"/></svg><h2>A fresh perspective.</h2><p>You’ve reached the end of this round.</p><button id="next-round" class="button primary">Shuffle again</button></div>
+      <div class="action-rail" aria-label="Reel controls">
+        <button id="unsave" class="rail-button saved" aria-label="Unsave reel" aria-pressed="true" title="Unsave (U)"><span><svg><use href="#i-bookmark"/></svg></span><small id="save-label">Saved</small></button>
+        <button id="mute" class="rail-button" aria-label="Unmute" aria-pressed="true" title="Toggle sound (M)"><span><svg id="mute-icon"><use href="#i-mute"/></svg></span><small id="mute-label">Sound off</small></button>
+        <a id="open-reel" class="rail-button" target="_blank" rel="noopener noreferrer" aria-label="Open reel on Instagram" title="Open on Instagram"><span><svg><use href="#i-external"/></svg></span><small>Original</small></a>
+        <div class="rail-divider"></div>
+        <button id="reshuffle" class="rail-button" aria-label="Start a fresh shuffle round" title="Shuffle again"><span><svg><use href="#i-shuffle"/></svg></span><small>Reshuffle</small></button>
+      </div>
+      <div class="player-bottom"><span id="position">01 <span>/ 00</span></span><button id="next" class="text-button">Keep discovering <svg><use href="#i-down"/></svg></button></div>
+    </section>
+    <section id="empty" class="empty-state" aria-live="polite"><div class="empty-art"><svg><use href="#i-bookmark"/></svg><span class="spark spark-one">✦</span><span class="spark spark-two">✦</span></div><span class="eyebrow">YOUR PERSONAL REPLAY</span><h2 id="empty-title">Your saves, with a little shuffle.</h2><p id="empty-description">Connecting to your Instagram library…</p><a id="empty-instagram" class="button primary" href="https://www.instagram.com/" target="_blank" rel="noopener noreferrer">Open Instagram <svg><use href="#i-external"/></svg></a><button id="empty-retry" class="button subtle">Refresh now</button><small>Your library stays on this device.</small></section>
+    <aside class="right-note"><span class="tiny-label">A LITTLE ROOM TO REPLAY</span><span class="vertical-line"></span><p>Saved for a reason.<br>Watch it again.</p><div id="library-detail" class="library-detail">NO ALGORITHMS. JUST YOU.</div></aside>
+  </main>
+  <div id="banner" class="banner" role="alert" hidden><span id="banner-text"></span><a id="banner-instagram" href="https://www.instagram.com/" target="_blank" rel="noopener noreferrer">Open Instagram ↗</a><button id="banner-resume" class="text-button">Try again</button></div>
+  <footer class="footer"><span><span class="privacy-dot"></span>LOCAL & PRIVATE</span><div class="shortcuts"><span><kbd>↑</kbd><kbd>↓</kbd> next / previous</span><span><kbd>M</kbd> sound</span><span><kbd>Space</kbd> pause</span><span><kbd>U</kbd> unsave</span></div><button id="help-open" class="text-button">Keyboard shortcuts <span>?</span></button></footer>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden><span id="toast-text"></span><button id="toast-undo" hidden>Undo <span id="undo-seconds">5</span></button><button id="toast-dismiss" aria-label="Dismiss notification"><svg><use href="#i-close"/></svg></button><div class="toast-timer" id="toast-timer"></div></div>
+  <dialog id="settings-dialog" class="dialog"><form id="settings-form"><div class="dialog-heading"><div><span class="eyebrow">MAKE IT YOURS</span><h2>Playback & preferences</h2></div><button type="button" class="icon-button" data-close="settings-dialog" aria-label="Close settings"><svg><use href="#i-close"/></svg></button></div><label class="setting-row"><span><strong>Autoplay reels</strong><small>Play when a reel comes into view</small></span><input type="checkbox" name="autoplay" role="switch"></label><label class="setting-row"><span><strong>Start with sound off</strong><small>Your sound toggle is remembered</small></span><input type="checkbox" name="muted" role="switch"></label><label class="setting-row"><span><strong>Include other saved posts</strong><small>Photos and the first slide of carousels</small></span><input type="checkbox" name="includeNonReels" role="switch"></label><label class="setting-row"><span><strong>Request pace</strong><small>Gentle, spaced requests to Instagram</small></span><select name="requestDelay"><option value="normal">Normal · 1.5 s</option><option value="slow">Slow · 2.5 s</option></select></label><div class="dialog-actions"><button type="button" id="clear-open" class="text-button danger">Clear local data</button><button class="button primary" type="submit">Save preferences</button></div><p class="fine-print">No passwords, analytics or servers. Signed video links are never saved to your library.</p></form></dialog>
+  <dialog id="clear-dialog" class="dialog compact"><h2>Clear this local library?</h2><p>This removes cached posts and preferences from this browser. Your Instagram saves are kept.</p><div class="dialog-actions"><button class="button subtle" data-close="clear-dialog">Keep library</button><button id="clear-confirm" class="button destructive">Clear local data</button></div></dialog>
+  <dialog id="help-dialog" class="dialog compact"><div class="dialog-heading"><h2>A few handy keys</h2><button class="icon-button" data-close="help-dialog" aria-label="Close shortcuts"><svg><use href="#i-close"/></svg></button></div><div class="key-row"><span>Next / previous reel</span><span><kbd>↓</kbd> <kbd>↑</kbd> or <kbd>J</kbd> <kbd>K</kbd></span></div><div class="key-row"><span>Toggle sound</span><kbd>M</kbd></div><div class="key-row"><span>Play / pause</span><kbd>Space</kbd></div><div class="key-row"><span>Unsave current reel</span><kbd>U</kbd></div><p class="fine-print">Scroll or swipe vertically to explore. Unsave has a five-second Undo.</p></dialog>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# Local tooling and caches (reinstall with: cd .qa && npm install)
+.qa/node_modules/
+.tools/
+.pdf-reader/
+tmp/
+qa-output/
+.qa-profile*/
+*.zip
+__pycache__/

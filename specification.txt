@@ -1,0 +1,446 @@
+
+--- PAGE 1 ---
+SRS: Saved Reels Feed (Chrome Extension)
+Nov 15, 2026  ·  @AV
+1. Introduction
+This document specifies a personal Chrome extension (working title: ReelShuffle) that
+loads the user's Instagram saved reels, shuffles them, and plays them in a vertical full-
+screen feed with an unsave button that syncs back to Instagram.
+1.1 Purpose
+Instagram's saved collection is a long, unordered archive that is hard to revisit.
+ReelShuffle turns it into a random, scrollable feed so saved reels actually get watched
+again.
+1.2 Scope
+Runs only in the user's own Chrome browser, inside their logged-in Instagram session.
+Reads the user's saved reels, plays them in a custom feed, and unsaves them on
+request.
+Single user, personal use. No backend server, no public hosting, no sharing of content.
+1.3 Definitions
+Term Meaning
+Saved reel A video post (reel) the user has bookmarked via
+Instagram's Save button
+Feed page The extension's own full-page tab that shows the
+shuffled reels
+Session The user's existing logged-in Instagram web
+session (cookies in Chrome)
+Shortcode The short ID in an Instagram post URL, e.g. the part
+after /reel/
+Service worker The Manifest V3 background script of the
+extension
+SRS: Saved Reels Feed (Chrome Extension)
+Page 1 of 13
+
+--- PAGE 2 ---
+1.4 References
+Chrome Extensions Manifest V3 documentation
+Instagram web app network traffic (to be inspected in DevTools to confirm current
+endpoints)
+Instagram Terms of Use (see section 7)
+2. Overall description
+2.1 Product perspective
+A standalone Chrome extension (Manifest V3) that piggybacks on the user's logged-in
+Instagram session. A normal website cannot do this job, because browsers block cross-
+site calls that carry Instagram cookies. An extension with host permission for
+instagram.com can make those calls legitimately from the user's own browser.
+2.2 Product functions (summary)
+1. Detect that the user is logged in to Instagram.
+2. Fetch the full list of saved reels, page by page.
+3. Cache the list locally and refresh it on each open.
+4. Shuffle the list and play it in a vertical snap-scroll feed.
+5. Let the user unsave a reel with one click, synced to Instagram.
+2.3 User characteristics
+One user: the developer and owner of the Instagram account. Comfortable loading an
+unpacked extension in Chrome developer mode. No accounts, onboarding or support
+needed.
+Term Meaning
+Internal endpoints Instagram's undocumented web API calls used by
+instagram.com itself
+SRS: Saved Reels Feed (Chrome Extension)
+Page 2 of 13
+
+--- PAGE 3 ---
+2.4 Operating environment
+Desktop Chrome (or a Chromium browser such as Edge or Brave) on Windows,
+macOS or Linux.
+The user is already logged in to instagram.com in the same browser profile.
+Not supported in v1: mobile browsers, Safari, Firefox.
+2.5 Assumptions and dependencies
+Instagram's internal web endpoints for listing saved posts, resolving a reel's video
+URL and unsaving remain reachable with the session cookies. Their exact paths and
+response shapes must be confirmed by inspecting the site's network traffic, and they
+can change without notice.
+Video file URLs returned by Instagram are signed and expire, so they are fetched
+fresh when needed.
+2.6 Constraints
+Must be built on Manifest V3 (service worker, no remotely hosted code).
+No backend server and no third-party data storage. Everything stays in the browser.
+Request volume must stay low and human-paced to avoid rate limits (see NFR-4).
+3. Functional requirements
+Priority: M = must have for v1, S = should have, C = could have later.
+3.1 Session and launch
+ID Requirement Priority
+FR-1 Clicking the extension icon opens the Feed page in
+a new tab (or focuses it if already open).
+M
+FR-2 On open, the extension checks whether the user is
+logged in to instagram.com by testing a lightweight
+authenticated call.
+M
+SRS: Saved Reels Feed (Chrome Extension)
+Page 3 of 13
+
+--- PAGE 4 ---
+3.2 Saved list sync
+3.3 Local cache
+ID Requirement Priority
+FR-3 If not logged in, the Feed page shows a message
+and a button that opens
+instagram.com/accounts/login in a new tab. It
+never asks for or stores the user's password.
+M
+ID Requirement Priority
+FR-4 On each open, the service worker fetches the
+saved list from Instagram's internal endpoint,
+following pagination until the end.
+M
+FR-5 Only items of type reel (video) are kept. Saved
+photos and carousels are skipped, with an optional
+setting to include them.
+M
+FR-6 For each reel, store: shortcode, media ID, thumbnail
+URL, caption (first 200 characters), author
+username, and time saved.
+M
+FR-7 Sync shows progress ("Loaded 120 reels...") and the
+feed can start as soon as the first page arrives.
+S
+FR-8 Pages are fetched with a delay between requests
+(see NFR-4) and the sync stops cleanly on a rate-
+limit response.
+M
+FR-9 Reels no longer in the saved list are removed from
+the local cache on a full sync.
+M
+ID Requirement Priority
+FR-10 The reel list is stored in IndexedDB so the Feed
+page can open instantly from cache while a refresh
+runs in the background.
+M
+SRS: Saved Reels Feed (Chrome Extension)
+Page 4 of 13
+
+--- PAGE 5 ---
+3.4 Shuffled feed
+ID Requirement Priority
+FR-11 A manual "Refresh now" button forces a full re-
+sync.
+S
+FR-12 A "Clear local data" button deletes the cache and
+settings.
+M
+ID Requirement Priority
+FR-13 The feed order is a fresh random shuffle (Fisher-
+Yates) of the cached reels each time the page
+opens.
+M
+FR-14 Reels are shown one per screen in a vertical snap-
+scroll layout, like Instagram's reels feed. Scroll,
+arrow keys and swipe/trackpad gestures move
+between reels.
+M
+FR-15 The reel in view autoplays, and every other reel is
+paused. Sound is off on first load (browser
+autoplay policy) and the mute toggle persists after
+the first click.
+M
+FR-16 Videos load lazily: only the current reel and the
+next 2 are prepared, and reels far from the
+viewport are unloaded.
+M
+FR-17 Each reel shows the author, a caption snippet, a
+progress bar, and a mute/unmute button.
+S
+FR-18 An "Open on Instagram" link opens the original reel
+URL in a new tab.
+S
+FR-19 A reel is never repeated within a shuffle round.
+When the list ends, the feed reshuffles and starts a
+new round.
+M
+SRS: Saved Reels Feed (Chrome Extension)
+Page 5 of 13
+
+--- PAGE 6 ---
+3.5 Video resolution
+3.6 Unsave
+ID Requirement Priority
+FR-20 Video file URLs are fetched on demand when a reel
+is about to be shown, never stored long-term, since
+they expire.
+M
+FR-21 If a video fails to load (expired URL, deleted reel,
+private account), the extension retries once with a
+fresh URL, then skips to the next reel and shows a
+small "Unavailable" notice.
+M
+ID Requirement Priority
+FR-22 Each reel has an Unsave button (bookmark icon)
+styled like Instagram's.
+M
+FR-23 Clicking it sends the unsave request to Instagram's
+internal endpoint using the user's session.
+M
+FR-24 The UI updates optimistically: the icon changes
+state and a toast with Undo appears for 5 seconds.
+M
+FR-25 On success, the reel is removed from the local
+cache and the feed advances to the next reel. If the
+user clicks Undo, the extension calls the save
+endpoint to restore it.
+M
+FR-26 On failure, the icon reverts and an error toast
+explains what happened. The reel stays in the
+cache.
+M
+SRS: Saved Reels Feed (Chrome Extension)
+Page 6 of 13
+
+--- PAGE 7 ---
+3.7 Settings
+3.8 Error handling
+4. External interface requirements
+4.1 User interface
+Feed page: dark, full-viewport, one centred 9:16 video column (max about 420 px wide
+on desktop), with the action rail on the right: unsave, mute, open on Instagram.
+Top bar: reel count ("214 saved"), sync status, Refresh button, Settings gear.
+Toasts: bottom-centre, for unsave with Undo and for errors.
+Empty state: "No saved reels found" with a link to Instagram.
+Keyboard: Up/Down or J/K to move, M to mute, Space to pause, U to unsave.
+ID Requirement Priority
+FR-27 Settings: include non-reel saved posts, autoplay
+on/off, default mute state, and request delay (slow /
+normal).
+C
+FR-28 Settings are stored in chrome.storage.local . C
+ID Requirement Priority
+FR-29 Session expired mid-use: show the login prompt
+without losing the feed position.
+M
+FR-30 Rate-limited or challenge response from Instagram:
+stop all calls, show a clear message and suggest
+waiting. The extension must never try to bypass a
+challenge.
+M
+FR-31 Unexpected response shape (Instagram changed
+something): show "Instagram changed its format",
+log details to the console, and keep using the
+cache.
+M
+SRS: Saved Reels Feed (Chrome Extension)
+Page 7 of 13
+
+--- PAGE 8 ---
+4.2 Instagram web interface (unofficial)
+Three operations are needed. Exact URLs, headers and response fields must be
+confirmed by watching the Network tab on instagram.com, and are deliberately not fixed
+in this document because they change.
+All calls are made from the service worker with credentials: include  and the headers
+Instagram's own web client sends (CSRF token, app ID). The extension must not alter or
+spoof anything beyond what a normal browser tab would send.
+4.3 Browser APIs
+4.4 Manifest permissions
+Host permission: https://www.instagram.com/*  and the Instagram video CDN
+host(s).
+Permissions: storage , cookies .
+Operation Used by Notes
+List saved items
+(paginated)
+FR-4 to FR-
+6
+Cursor-based; returns media with type,
+shortcode, thumbnail, author
+Resolve video URL for one
+reel
+FR-20 Returns a signed, expiring CDN link
+Save / unsave one item FR-23, FR-
+25
+Needs the media ID; requires the CSRF token
+header from the session cookies
+API Purpose
+chrome.action Toolbar icon that opens the Feed page
+chrome.runtime  messaging Feed page to service worker requests
+chrome.cookies  (read only) Read the CSRF token for instagram.com
+IndexedDB Reel list cache
+chrome.storage.local Settings
+IntersectionObserver Detect the current reel for autoplay
+SRS: Saved Reels Feed (Chrome Extension)
+Page 8 of 13
+
+--- PAGE 9 ---
+No other sites, no analytics, no remote scripts.
+5. Non-functional requirements
+ID Category Requirement
+NFR-1 Performance With a warm cache, the first reel starts playing
+within 2 seconds of opening the Feed page on a
+normal broadband connection.
+NFR-2 Performance Swiping to the next reel starts playback within 500
+ms when it was pre-loaded.
+NFR-3 Scalability Handles at least 2,000 saved reels without
+noticeable lag. Only the current reel plus 2
+neighbours hold a loaded video element.
+NFR-4 Safety / rate limiting Saved-list pages are requested at least 1 to 2
+seconds apart, and no more than one video-URL
+lookup is in flight at a time. Backs off exponentially
+on any 429 or challenge response.
+NFR-5 Reliability If Instagram is unreachable, the cached list still
+opens and plays whatever videos can load. Failures
+never crash the feed.
+NFR-6 Security No password, token or cookie value is ever stored,
+logged or sent anywhere except back to
+instagram.com. The CSRF token is read at call time
+only.
+NFR-7 Privacy All data stays on the user's device. No analytics,
+telemetry or third-party requests.
+NFR-8 Compatibility Works on current stable Chrome and Chromium-
+based browsers (Manifest V3).
+NFR-9 Maintainability All Instagram-specific code (endpoint paths,
+headers, response parsing) lives in one module, so
+a format change means editing one file.
+NFR-10 Usability Controls and gestures match Instagram's reels
+behaviour closely enough that no learning is
+needed.
+SRS: Saved Reels Feed (Chrome Extension)
+Page 9 of 13
+
+--- PAGE 10 ---
+6. Data model and architecture
+6.1 Components
+The Feed page never calls Instagram's API itself. It asks the service worker for anything
+that needs the session, and reads the reel list straight from IndexedDB. Video files stream
+from Instagram's CDN into the page's video element.
+6.2 Stored data
+ID Category Requirement
+NFR-11 Accessibility Buttons are keyboard focusable with labels, and
+toasts are announced to screen readers.
+architecture · 3 runtime parts, 1 local cache
+Store Field Notes
+IndexedDB reels shortcode
+(key)
+Used to build the reel's Instagram URL
+mediaId Required for unsave and re-save
+thumbUrl Poster image shown before the video loads
+author Username shown on the reel
+caption First 200 characters
+SRS: Saved Reels Feed (Chrome Extension)
+Page 10 of 13
+
+--- PAGE 11 ---
+Video URLs are intentionally not stored (FR-20).
+6.3 Typical sequence
+1. User clicks the toolbar icon, and the Feed page opens and draws from the cache.
+2. The page asks the service worker to sync. The worker checks the session, then pages
+through the saved list with delays.
+3. New and removed reels update IndexedDB. The page picks up the changes and
+reshuffles on the next round.
+4. As a reel nears the viewport, the page requests a fresh video URL through the worker
+and starts playback.
+5. User presses Unsave. The worker calls Instagram, the cache entry is deleted, and the
+feed moves on, with Undo available for 5 seconds.
+7. Risks, terms of use and out of scope
+7.1 Risks
+Store Field Notes
+savedAt Original save time if Instagram provides it
+chrome.storage.local settings Autoplay, mute default, include non-reels,
+request delay
+Risk Likelihood Impact Mitigation
+Instagram changes its
+internal endpoints or
+response format
+High over
+time
+Feed stops syncing or
+unsaving
+Isolate all Instagram
+code in one module
+(NFR-9); fall back to
+cache (FR-31)
+Rate limiting or an
+account action block
+from too many requests
+Medium Temporary loss of
+access, account
+warning
+Slow paged requests,
+back off on errors, never
+retry through a
+challenge (NFR-4, FR-
+30)
+SRS: Saved Reels Feed (Chrome Extension)
+Page 11 of 13
+
+--- PAGE 12 ---
+7.2 Terms of use
+Instagram's terms do not permit automated access to its service by unofficial means, and
+the saved list has no official API. This design reduces the exposure: one user, one account,
+the user's own logged-in browser, human-paced requests, no stored credentials, no public
+distribution and no redistribution of videos. It does not remove the risk, and the account
+owner accepts it. If this ever becomes a public product, the design needs to be revisited.
+7.3 Out of scope for v1
+Mobile and Safari support.
+Downloading or exporting videos.
+Multiple accounts.
+Collections, filters or search by author or caption.
+Publishing to the Chrome Web Store.
+Any server component.
+8. Acceptance criteria and milestones
+8.1 Acceptance criteria (v1)
+Risk Likelihood Impact Mitigation
+Signed video URLs
+expire
+Certain Video fails to play Fetch URLs just in time,
+retry once (FR-20, FR-
+21)
+Browser autoplay policy
+blocks sound
+Certain Reels start muted Start muted, remember
+the unmute choice (FR-
+15)
+Saved reel deleted or
+made private
+Medium Reel cannot play Skip with a notice (FR-
+21), drop it on next full
+sync (FR-9)
+With the user logged in, opening the extension shows a shuffled feed built from their
+real saved reels.
+The reel in view autoplays and the others are paused, with smooth snap-scrolling.
+Two consecutive opens produce two different orders.
+SRS: Saved Reels Feed (Chrome Extension)
+Page 12 of 13
+
+--- PAGE 13 ---
+8.2 Milestones
+8.3 Open questions
+Should saved photos and carousels be included, or reels only (current default: reels
+only)?
+Is desktop Chrome enough, or is a phone-friendly version needed later? A phone
+would require a different approach.
+Pressing Unsave removes the reel from Instagram's saved list (verified in the
+Instagram app) and from the feed. Undo within 5 seconds restores it.
+A library of at least 500 saved reels loads and scrolls without lag.
+Logged out, the page shows the login prompt and makes no further calls.
+A simulated 429 or format change stops requests and shows the right message while
+the cache stays usable.
+No requests go to any host other than Instagram and its video CDN.
+Phase Goal Done when
+M0 Endpoint discovery Saved-list, video-URL and unsave calls identified in
+DevTools and working from a test script
+M1 Sync and cache Service worker pulls the full saved list into
+IndexedDB (FR-1 to FR-12)
+M2 Feed Shuffled snap-scroll feed with autoplay and lazy
+loading (FR-13 to FR-21)
+M3 Unsave Unsave and Undo working end to end (FR-22 to FR-
+26)
+M4 Hardening Error handling, rate limiting, settings and
+acceptance checks (FR-27 to FR-31, NFRs)
+SRS: Saved Reels Feed (Chrome Extension)
+Page 13 of 13

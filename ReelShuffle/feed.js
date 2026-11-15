@@ -1,0 +1,486 @@
+import { getReels } from './lib/db.js';
+import { shuffle, settingsWithDefaults } from './lib/model.js';
+
+const $ = id => document.getElementById(id);
+const feed = $('feed');
+let settings = settingsWithDefaults(), state = {}, library = new Map(), order = [], active = 0, round = 0;
+let cards = new Map(), assets = new Map(), unavailable = new Set(), pending = new Map();
+let blocked = false, switchingRound = false, refreshingCache = false, refreshAgain = false;
+let toastTimer, undoTimer, undoAction, nextRoundTimer, wheelAt = 0, wheelDelta = 0;
+let scrollFrame = 0, lastFirst = null, manuallyPaused = new Set(), clearInProgress = false, programmaticUntil = 0;
+const blockers = new Set(['AUTH', 'RATE_LIMIT', 'CHALLENGE', 'FORMAT']);
+const before = document.createElement('div'), after = document.createElement('div');
+before.className = after.className = 'feed-spacer';
+const ending = document.createElement('div'); ending.className = 'round-end'; ending.textContent = 'A new round is on its way…';
+feed.append(before, after);
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+async function rpc(type, payload = {}) {
+  const response = await chrome.runtime.sendMessage({ type, ...payload });
+  if (!response?.ok) {
+    const detail = response?.error || { code: 'LOCAL', message: 'The extension restarted. Refresh this tab to reconnect.' };
+    const err = Object.assign(new Error(detail.message), detail);
+    if (blockers.has(err.code)) applyState({ ...state, phase: 'error', ...detail });
+    throw err;
+  }
+  return response.data;
+}
+function notify(message, { undo, duration = 5000 } = {}) {
+  clearTimeout(toastTimer); clearInterval(undoTimer);
+  $('toast-text').textContent = message;
+  $('toast').hidden = false;
+  $('toast-undo').hidden = !undo;
+  $('toast-timer').hidden = !undo;
+  $('toast-timer').getAnimations().forEach(a => a.cancel());
+  undoAction = undo || null;
+  if (undo) {
+    const deadline = Date.now() + 5000;
+    $('undo-seconds').textContent = '5';
+    $('toast-timer').animate([{ transform: 'scaleX(1)' }, { transform: 'scaleX(0)' }], { duration: 5000, fill: 'forwards' });
+    undoTimer = setInterval(() => { $('undo-seconds').textContent = String(Math.max(0, Math.ceil((deadline - Date.now()) / 1000))); }, 200);
+  }
+  toastTimer = setTimeout(dismissToast, duration);
+}
+function dismissToast() {
+  $('toast').hidden = true; undoAction = null; clearTimeout(toastTimer); clearInterval(undoTimer);
+}
+
+function applyState(next) {
+  state = next;
+  blocked = next.phase === 'error' && blockers.has(next.code);
+  $('sync-status').textContent = next.message || 'Ready when you are';
+  $('sync-status').title = next.lastSync ? `Last full refresh: ${new Date(next.lastSync).toLocaleString()}` : 'No complete refresh yet';
+  $('status-dot').className = `status-dot ${next.phase === 'syncing' ? 'busy' : next.phase === 'error' ? 'error' : ''}`;
+  $('refresh').disabled = next.phase === 'syncing' || clearInProgress;
+  $('cancel-sync').hidden = next.phase !== 'syncing';
+  $('banner').hidden = next.phase !== 'error' || library.size === 0;
+  let message = next.message || '';
+  if (next.retryAt) message += ` Try again after ${new Date(next.retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`;
+  $('banner-text').textContent = message;
+  $('banner-instagram').href = next.code === 'AUTH' ? 'https://www.instagram.com/accounts/login/' : 'https://www.instagram.com/';
+  $('banner-resume').disabled = Boolean(next.retryAt && next.retryAt > Date.now());
+  updateEmpty();
+  if (!blocked && order.length) prepareWindow();
+}
+
+function updateEmpty() {
+  const hasItems = order.length > 0;
+  $('player-shell').hidden = !hasItems;
+  $('empty').hidden = hasItems;
+  $('saved-count').textContent = `${library.size.toLocaleString()} saved`;
+  if (hasItems) return;
+  const auth = state.code === 'AUTH';
+  $('empty-title').textContent = auth ? 'Your library is one login away.' : state.phase === 'syncing' ? 'Finding your saved gems.' : state.phase === 'error' ? 'Let’s pick this up shortly.' : 'No saved reels found';
+  $('empty-description').textContent = auth ? 'Log in to Instagram in this Chrome profile. Then come back and refresh your library.' : state.phase === 'error' ? state.message : state.phase === 'syncing' ? 'Your first reels will appear as soon as they arrive. Larger libraries take a moment.' : 'Open your Saved page on Instagram. ReelShuffle loads your whole saved library from there.';
+  const savedPage = state.username ? `https://www.instagram.com/${encodeURIComponent(state.username)}/saved/` : 'https://www.instagram.com/';
+  $('empty-instagram').href = auth ? 'https://www.instagram.com/accounts/login/' : savedPage;
+  $('empty-instagram').firstChild.textContent = auth ? 'Log in to Instagram ' : state.username ? 'Open my Saved page ' : 'Open Instagram ';
+  $('empty-retry').disabled = state.phase === 'syncing' || Boolean(state.retryAt && state.retryAt > Date.now()) || clearInProgress;
+  $('empty-retry').textContent = auth ? 'I’m logged in · Refresh' : 'Refresh now';
+}
+
+async function refreshCache(reset = false) {
+  if (refreshingCache) { refreshAgain = true; return; }
+  refreshingCache = true;
+  try {
+    const records = await getReels();
+    library = new Map(records.map(r => [r.shortcode, r]));
+    if (reset) { dropAll(); order = []; active = 0; round = 0; }
+    if (!order.length && library.size && !clearInProgress) {
+      await startRound();
+    } else if (order.length) {
+      const current = order[active]?.shortcode;
+      const previousLength = order.length;
+      order = order.filter(r => library.has(r.shortcode));
+      const preserved = order.findIndex(r => r.shortcode === current);
+      active = preserved >= 0 ? preserved : Math.min(active, Math.max(0, order.length - 1));
+      if (order.length) {
+        // Keep the round stable while new pages arrive. New saves join the next round.
+        order = order.map(r => library.get(r.shortcode));
+        if (previousLength !== order.length || preserved < 0) {
+          renderWindow(true); feed.scrollTop = active * height();
+        } else { updateControls(); prepareWindow(); }
+      } else if (library.size) await startRound();
+      else dropAll();
+    }
+    updateEmpty();
+  } catch { notify('The local cache could not be opened. Reopen the extension to try again.'); }
+  finally {
+    refreshingCache = false;
+    if (refreshAgain) { refreshAgain = false; void refreshCache(); }
+  }
+}
+
+async function startRound(manual = false) {
+  if (switchingRound) return;
+  switchingRound = true;
+  clearTimeout(nextRoundTimer); $('round-card').hidden = true;
+  try {
+    const previous = order[active]?.shortcode || lastFirst;
+    const records = await getReels();
+    library = new Map(records.map(r => [r.shortcode, r]));
+    if (manual) unavailable.clear();
+    const playable = records.filter(r => !unavailable.has(r.shortcode));
+    if (!playable.length && records.length) { showUnavailable(); return; }
+    dropAll();
+    order = shuffle(playable, previous); active = 0; round++;
+    lastFirst = order[0]?.shortcode || null;
+    await chrome.storage.session.set({ previousFirst: lastFirst });
+    manuallyPaused.clear();
+    updateEmpty();
+    renderWindow(); feed.scrollTop = 0;
+  } finally { switchingRound = false; }
+}
+
+function height() { return feed.clientHeight || 600; }
+function dropCard(key, card) {
+  const video = card.querySelector('video');
+  if (video) { video.pause(); video.removeAttribute('src'); video.load(); }
+  observer.unobserve(card); card.remove(); cards.delete(key);
+}
+function dropAll() {
+  for (const [key, card] of [...cards]) dropCard(key, card);
+  for (const slot of assets.values()) if (slot.pending && slot.requestId) void rpc('CANCEL_RESOLVE', { requestId: slot.requestId }).catch(() => {});
+  assets.clear(); ending.remove(); before.style.height = after.style.height = '0px';
+}
+const observer = new IntersectionObserver(entries => {
+  for (const entry of entries) {
+    const video = entry.target.querySelector('video');
+    if (!video) continue;
+    if (!entry.isIntersecting || Number(entry.target.dataset.index) !== active || document.hidden) video.pause();
+    else if (entry.intersectionRatio >= .6) playActive();
+  }
+}, { root: feed, threshold: [0, .6, 1] });
+
+function makeCard(reel, index) {
+  const card = document.createElement('article'); card.className = 'reel-card'; card.dataset.shortcode = reel.shortcode; card.dataset.index = index;
+  card.setAttribute('aria-label', `Saved ${reel.kind === 'image' ? 'post' : 'reel'} by ${reel.author}`);
+  const video = document.createElement('video');
+  video.playsInline = true; video.loop = true; video.muted = settings.muted; video.preload = 'auto'; video.disablePictureInPicture = false;
+  if (reel.thumbUrl) video.poster = reel.thumbUrl;
+  video.setAttribute('aria-label', `Video by ${reel.author}`);
+  const image = document.createElement('img'); image.className = 'post-image'; image.alt = `Saved post by ${reel.author}`; image.hidden = true;
+  const overlay = document.createElement('button'); overlay.className = 'play-overlay paused'; overlay.setAttribute('aria-label', 'Play or pause reel');
+  overlay.innerHTML = '<span class="play-symbol"><svg><use href="#i-play"/></svg></span>';
+  overlay.addEventListener('click', togglePlay);
+  const metadata = document.createElement('div'); metadata.className = 'card-metadata';
+  const author = document.createElement('div'); author.className = 'author-line';
+  const avatar = document.createElement('span'); avatar.className = 'author-avatar'; avatar.textContent = reel.author.slice(0, 1);
+  const username = document.createElement('span'); username.textContent = `@${reel.author}`;
+  author.append(avatar, username);
+  const caption = document.createElement('p'); caption.className = 'caption'; caption.textContent = reel.caption;
+  const savedTag = document.createElement('div'); savedTag.className = 'saved-tag';
+  savedTag.innerHTML = '<svg><use href="#i-bookmark"/></svg><span>FROM YOUR SAVED LIBRARY</span>';
+  metadata.append(author, caption, savedTag);
+  const progress = document.createElement('div'); progress.className = 'video-progress'; progress.innerHTML = '<span></span>';
+  const loading = document.createElement('span'); loading.className = 'loading-label'; loading.textContent = 'Getting your reel ready';
+  card.append(video, image, overlay, metadata, progress, loading);
+  video.addEventListener('timeupdate', () => { progress.firstChild.style.width = `${Number.isFinite(video.duration) && video.duration ? video.currentTime / video.duration * 100 : 0}%`; });
+  video.addEventListener('play', () => overlay.classList.remove('paused'));
+  video.addEventListener('pause', () => overlay.classList.add('paused'));
+  video.addEventListener('loadeddata', () => { loading.hidden = true; if (reel.shortcode === order[active]?.shortcode) playActive(); });
+  video.addEventListener('error', () => { if (video.hasAttribute('src')) void retryMedia(reel); });
+  image.addEventListener('load', () => { loading.hidden = true; });
+  image.addEventListener('error', () => { if (image.hasAttribute('src')) void retryMedia(reel); });
+  cards.set(reel.shortcode, card); observer.observe(card);
+  return card;
+}
+
+function renderWindow(rebuild = false) {
+  if (!order.length) { updateEmpty(); return; }
+  if (rebuild) for (const [key, card] of [...cards]) dropCard(key, card);
+  const first = Math.max(0, active - 1), last = Math.min(order.length - 1, active + 2);
+  const desired = new Set(order.slice(first, last + 1).map(r => r.shortcode));
+  for (const [key, card] of [...cards]) if (!desired.has(key)) dropCard(key, card);
+  before.style.height = `${first * height()}px`;
+  after.style.height = `${Math.max(0, order.length - last - 1) * height()}px`;
+  for (let i = first; i <= last; i++) {
+    const reel = order[i];
+    const card = cards.get(reel.shortcode) || makeCard(reel, i);
+    card.dataset.index = i; card.style.height = `${height()}px`;
+    feed.insertBefore(card, after);
+  }
+  // One extra snap target makes scrolling past the last reel start the next round.
+  ending.style.height = `${height()}px`; feed.append(ending);
+  updateControls(); prepareWindow();
+}
+
+function updateControls() {
+  const reel = order[active]; if (!reel) return;
+  $('position').replaceChildren();
+  $('position').append(document.createTextNode(String(active + 1).padStart(2, '0') + ' '));
+  const total = document.createElement('span'); total.textContent = `/ ${String(order.length).padStart(2, '0')}`; $('position').append(total);
+  $('round-label').textContent = `ROUND ${String(round).padStart(2, '0')}`;
+  $('library-detail').textContent = state.username ? `@${state.username.toUpperCase()} · YOUR LIBRARY` : 'NO ALGORITHMS. JUST YOU.';
+  $('open-reel').href = `https://www.instagram.com/${reel.kind === 'image' ? 'p' : 'reel'}/${reel.shortcode}/`;
+  const isPending = pending.has(reel.shortcode);
+  $('unsave').classList.toggle('saved', !isPending);
+  $('unsave').setAttribute('aria-pressed', String(!isPending));
+  $('unsave').disabled = isPending || blocked;
+  $('save-label').textContent = isPending ? 'Removing' : 'Saved';
+  $('mute-icon').firstElementChild.setAttribute('href', settings.muted ? '#i-mute' : '#i-volume');
+  $('mute').setAttribute('aria-label', settings.muted ? 'Unmute' : 'Mute');
+  $('mute').setAttribute('aria-pressed', String(settings.muted));
+  $('mute-label').textContent = settings.muted ? 'Sound off' : 'Sound on';
+}
+
+function prepareWindow() {
+  if (!order.length || clearInProgress) return;
+  const prepared = new Set(order.slice(active, active + 3).map(r => r.shortcode));
+  for (const [key, slot] of assets) if (!prepared.has(key)) {
+    if (slot.pending && slot.requestId) void rpc('CANCEL_RESOLVE', { requestId: slot.requestId }).catch(() => {});
+    assets.delete(key);
+    const card = cards.get(key), video = card?.querySelector('video'), img = card?.querySelector('.post-image');
+    if (video?.hasAttribute('src')) { video.pause(); video.removeAttribute('src'); video.load(); }
+    if (img?.hasAttribute('src')) img.removeAttribute('src');
+  }
+  for (const [key, card] of cards) if (key !== order[active]?.shortcode) card.querySelector('video')?.pause();
+  if (blocked || document.hidden) return;
+  for (const reel of order.slice(active, active + 3)) {
+    const asset = assets.get(reel.shortcode);
+    if (asset?.failed && reel.shortcode === order[active]?.shortcode) void skipUnavailable(reel);
+    else if (asset?.data && !asset.failed) attachMedia(reel, asset.data);
+    else if (!asset) void loadMedia(reel);
+  }
+}
+
+async function loadMedia(reel, attempts = 0) {
+  const slot = { attempts, pending: true, requestId: crypto.randomUUID() }; assets.set(reel.shortcode, slot);
+  try {
+    const data = await rpc('RESOLVE', { mediaId: reel.mediaId, requestId: slot.requestId });
+    if (assets.get(reel.shortcode) !== slot) return;
+    slot.data = data; slot.pending = false;
+    attachMedia(reel, data);
+  } catch (err) {
+    if (assets.get(reel.shortcode) !== slot) return;
+    slot.pending = false;
+    if (blockers.has(err.code) || err.code === 'CANCELLED') { assets.delete(reel.shortcode); updateControls(); return; }
+    if (attempts === 0) { await loadMedia(reel, 1); return; }
+    slot.failed = true; slot.data = null;
+    if (reel.shortcode === order[active]?.shortcode) void skipUnavailable(reel);
+  }
+}
+function attachMedia(reel, data) {
+  const card = cards.get(reel.shortcode); if (!card) return;
+  const video = card.querySelector('video'), image = card.querySelector('.post-image');
+  if (data.kind === 'image') {
+    video.hidden = true; image.hidden = false; card.querySelector('.play-overlay').hidden = true;
+    if (image.getAttribute('src') !== data.url) image.src = data.url;
+    card.querySelector('.video-progress').hidden = true;
+  } else {
+    video.hidden = false; image.hidden = true;
+    video.muted = settings.muted;
+    if (video.getAttribute('src') !== data.url) video.src = data.url;
+    if (reel.shortcode === order[active]?.shortcode) playActive();
+  }
+}
+async function retryMedia(reel) {
+  const slot = assets.get(reel.shortcode);
+  if (!slot || slot.pending || blocked) return;
+  const card = cards.get(reel.shortcode);
+  const video = card?.querySelector('video'), image = card?.querySelector('.post-image');
+  if (video) { video.pause(); video.removeAttribute('src'); video.load(); }
+  image?.removeAttribute('src');
+  if (slot.attempts >= 1) {
+    slot.failed = true;
+    if (reel.shortcode === order[active]?.shortcode) await skipUnavailable(reel);
+  } else await loadMedia(reel, 1);
+}
+async function skipUnavailable(reel) {
+  if (unavailable.has(reel.shortcode)) return;
+  unavailable.add(reel.shortcode);
+  notify('Unavailable · skipping this reel');
+  if (order.every(r => unavailable.has(r.shortcode))) { showUnavailable(); return; }
+  if (reel.shortcode === order[active]?.shortcode) navigate(1);
+}
+function showUnavailable() {
+  for (const card of cards.values()) card.querySelector('video')?.pause();
+  $('round-card').hidden = false;
+  $('round-card').querySelector('h2').textContent = 'A little pause for now.';
+  $('round-card').querySelector('p').textContent = 'These reels couldn’t load. Your saves are kept; try again later.';
+  $('next-round').textContent = 'Try these reels again';
+}
+function playActive(force = false) {
+  const reel = order[active], video = cards.get(reel?.shortcode)?.querySelector('video');
+  if (!video || video.hidden || !video.hasAttribute('src') || document.hidden) return;
+  if (!force && (!settings.autoplay || manuallyPaused.has(reel.shortcode))) return;
+  video.muted = settings.muted;
+  const attempt = video.play();
+  attempt?.catch(err => {
+    if (err.name === 'NotAllowedError') cards.get(reel.shortcode)?.querySelector('.play-overlay').classList.add('paused');
+  });
+}
+function togglePlay() {
+  const reel = order[active], video = cards.get(reel?.shortcode)?.querySelector('video');
+  if (!video || video.hidden) return;
+  if (video.paused) { manuallyPaused.delete(reel.shortcode); playActive(true); }
+  else { manuallyPaused.add(reel.shortcode); video.pause(); }
+}
+function navigate(delta) {
+  if (!order.length || switchingRound || !$('round-card').hidden) return;
+  let index = active + delta;
+  while (index >= 0 && index < order.length && unavailable.has(order[index].shortcode)) index += delta;
+  if (index < 0) index = 0;
+  if (index >= order.length) { endRound(); return; }
+  active = index; programmaticUntil = Date.now() + (reduceMotion ? 0 : 650);
+  renderWindow();
+  feed.scrollTo({ top: active * height(), behavior: reduceMotion ? 'instant' : 'smooth' });
+}
+function endRound() {
+  for (const card of cards.values()) card.querySelector('video')?.pause();
+  $('round-card').hidden = false;
+  $('round-card').querySelector('h2').textContent = 'A fresh perspective.';
+  $('round-card').querySelector('p').textContent = 'You’ve reached the end. Shuffling your next round…';
+  $('next-round').textContent = 'Shuffle again';
+  clearTimeout(nextRoundTimer);
+  nextRoundTimer = setTimeout(() => void startRound(), 1200);
+}
+
+async function unsave() {
+  const reel = order[active];
+  if (!reel || pending.has(reel.shortcode) || blocked) return;
+  const operation = { undoRequested: false };
+  pending.set(reel.shortcode, operation); updateControls();
+  const removed = rpc('BOOKMARK', { reel, saved: false });
+  notify('Removed from your saved reels', { undo: async () => {
+    operation.undoRequested = true;
+    notify('Restoring your save…', { duration: 12000 });
+    try {
+      await removed;
+      await rpc('BOOKMARK', { reel, saved: true });
+      library.set(reel.shortcode, reel);
+      if (!order.some(r => r.shortcode === reel.shortcode)) order.splice(Math.min(active + 1, order.length), 0, reel);
+      pending.delete(reel.shortcode); await refreshCache();
+      notify('Restored to Instagram and your library');
+    } catch (err) { pending.delete(reel.shortcode); updateControls(); notify(`Couldn’t restore this save. ${err.message}`, { duration: 8000 }); }
+  } });
+  try {
+    await removed;
+    if (!operation.undoRequested) { pending.delete(reel.shortcode); await refreshCache(); }
+  } catch (err) {
+    pending.delete(reel.shortcode); updateControls();
+    notify(`Couldn’t unsave. ${err.message}`, { duration: 8000 });
+  }
+}
+
+async function refresh() {
+  try {
+    // Only an explicit refresh resumes a halted client. No automatic block retries.
+    blocked = false; unavailable.clear();
+    await rpc('SYNC');
+  } catch (err) { notify(err.message); }
+}
+
+feed.addEventListener('scroll', () => {
+  if (scrollFrame) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = 0;
+    if (switchingRound || !order.length || Date.now() < programmaticUntil) return;
+    const index = Math.round(feed.scrollTop / height());
+    if (index >= order.length) { endRound(); return; }
+    if (index !== active && index >= 0) { active = index; renderWindow(); }
+  });
+}, { passive: true });
+// Native snap points cannot span virtualized gaps. Snap after a touch/trackpad
+// gesture settles instead, so a long swipe can land anywhere in a large library.
+feed.addEventListener('scrollend', () => {
+  if (!order.length || switchingRound || !$('round-card').hidden) return;
+  const target = Math.min(order.length - 1, Math.round(feed.scrollTop / height()));
+  const top = target * height();
+  if (Math.abs(feed.scrollTop - top) > 1) {
+    active = target; renderWindow();
+    programmaticUntil = Date.now() + (reduceMotion ? 0 : 650);
+    feed.scrollTo({ top, behavior: reduceMotion ? 'instant' : 'smooth' });
+  }
+});
+feed.addEventListener('wheel', event => {
+  if (event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  event.preventDefault();
+  if (Date.now() - wheelAt < 520) return;
+  wheelDelta += event.deltaY;
+  if (Math.abs(wheelDelta) >= 24) { navigate(wheelDelta > 0 ? 1 : -1); wheelDelta = 0; wheelAt = Date.now(); }
+}, { passive: false });
+window.addEventListener('resize', () => { if (order.length) { renderWindow(); feed.scrollTop = active * height(); } });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) for (const card of cards.values()) card.querySelector('video')?.pause();
+  else prepareWindow();
+});
+document.addEventListener('keydown', event => {
+  if (document.querySelector('dialog[open]') || event.ctrlKey || event.metaKey || event.altKey || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
+  const key = event.key.toLowerCase();
+  if (event.target.closest('button,a') && [' ', 'enter'].includes(key)) return;
+  if (['arrowdown', 'j'].includes(key)) { event.preventDefault(); navigate(1); }
+  else if (['arrowup', 'k'].includes(key)) { event.preventDefault(); navigate(-1); }
+  else if (key === 'm') { event.preventDefault(); void toggleMute(); }
+  else if (key === ' ') { event.preventDefault(); togglePlay(); }
+  else if (key === 'u') { event.preventDefault(); void unsave(); }
+  else if (key === '?') $('help-dialog').showModal();
+});
+async function toggleMute() {
+  settings.muted = !settings.muted;
+  for (const card of cards.values()) card.querySelector('video').muted = settings.muted;
+  updateControls(); playActive(true);
+  try { await rpc('SETTINGS', { settings }); } catch (err) { notify(err.message); }
+}
+$('mute').addEventListener('click', () => void toggleMute());
+$('unsave').addEventListener('click', () => void unsave());
+$('next').addEventListener('click', () => navigate(1));
+$('reshuffle').addEventListener('click', () => void startRound(true));
+$('next-round').addEventListener('click', () => void startRound(true));
+for (const id of ['refresh', 'empty-retry', 'banner-resume']) $(id).addEventListener('click', () => void refresh());
+$('cancel-sync').addEventListener('click', async () => { try { await rpc('CANCEL_SYNC'); } catch (err) { notify(err.message); } });
+$('toast-dismiss').addEventListener('click', dismissToast);
+$('toast-undo').addEventListener('click', () => { const undo = undoAction; dismissToast(); if (undo) void undo(); });
+$('help-open').addEventListener('click', () => $('help-dialog').showModal());
+for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => $(button.dataset.close).close());
+for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click', event => { if (event.target === dialog) { const r = dialog.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.close(); } });
+$('settings-open').addEventListener('click', () => {
+  const form = $('settings-form');
+  for (const key of ['autoplay', 'muted', 'includeNonReels']) form.elements[key].checked = settings[key];
+  form.elements.requestDelay.value = settings.requestDelay;
+  $('settings-dialog').showModal();
+});
+$('settings-form').addEventListener('submit', async event => {
+  event.preventDefault(); const form = event.currentTarget;
+  const previousInclude = settings.includeNonReels;
+  settings = { autoplay: form.elements.autoplay.checked, muted: form.elements.muted.checked, includeNonReels: form.elements.includeNonReels.checked, requestDelay: form.elements.requestDelay.value };
+  try {
+    await rpc('SETTINGS', { settings });
+    $('settings-dialog').close(); updateControls();
+    for (const card of cards.values()) { const v = card.querySelector('video'); v.muted = settings.muted; if (!settings.autoplay) v.pause(); }
+    if (settings.autoplay) playActive();
+    if (previousInclude !== settings.includeNonReels) await refresh();
+    notify('Preferences saved');
+  } catch (err) { notify(err.message); }
+});
+$('clear-open').addEventListener('click', () => { $('settings-dialog').close(); $('clear-dialog').showModal(); });
+$('clear-confirm').addEventListener('click', async () => {
+  clearInProgress = true; $('clear-confirm').disabled = true; blocked = true;
+  try {
+    clearTimeout(nextRoundTimer); dropAll();
+    const result = await rpc('CLEAR');
+    settings = result.settings; library.clear(); order = []; active = 0; round = 0; pending.clear(); unavailable.clear();
+    $('clear-dialog').close(); updateEmpty(); notify('Local library and preferences cleared');
+  } catch (err) { notify(err.message); }
+  finally { clearInProgress = false; $('clear-confirm').disabled = false; applyState(state); }
+});
+
+chrome.runtime.onMessage.addListener(message => {
+  if (message.type === 'STATE_CHANGED') { applyState(message.state); updateControls(); }
+  else if (message.type === 'CACHE_CHANGED') void refreshCache(message.reset);
+  else if (message.type === 'SETTINGS_CHANGED') { settings = message.settings; updateControls(); }
+});
+
+async function init() {
+  try {
+    const [initial, session] = await Promise.all([rpc('GET_STATE'), chrome.storage.session.get('previousFirst')]);
+    settings = initial.settings; lastFirst = session.previousFirst || null; applyState(initial.state);
+    await refreshCache();
+    await rpc('SYNC');
+    // Update cooldown controls without making requests.
+    setInterval(() => { if (state.retryAt && state.retryAt <= Date.now()) { $('banner-resume').disabled = false; $('empty-retry').disabled = false; } }, 1000);
+  } catch (err) {
+    applyState({ phase: 'error', code: err.code || 'LOCAL', message: err.message });
+  }
+}
+void init();
