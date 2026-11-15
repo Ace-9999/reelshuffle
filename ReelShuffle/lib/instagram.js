@@ -7,6 +7,7 @@ const APP_ID = '936619743392459';
 const PATHS = {
   saved: '/api/v1/feed/saved/posts/',
   info: id => `/api/v1/media/${id}/info/`,
+  comments: (id, cursor) => `/api/v1/media/${id}/comments/?${new URLSearchParams({ can_support_threading: 'true', permalink_enabled: 'false', ...(cursor ? { min_id: cursor } : {}) })}`,
   bookmark: (id, saved) => `/api/v1/web/save/${id}/${saved ? 'save' : 'unsave'}/`,
 };
 
@@ -77,6 +78,28 @@ export function parseVideo(body) {
   const url = versions.map(v => safeMediaUrl(v.url)).find(Boolean);
   if (!url) throw error('UNAVAILABLE', 'This reel is private, deleted or unavailable.');
   return { url, kind: 'video' };
+}
+
+// Read-only comments for one post. Keeps only display fields; profile pictures must be Instagram media URLs.
+export function parseComments(body) {
+  if (!body || !Array.isArray(body.comments)) throw error('COMMENTS', `Comments couldn't be read (${shape(body)}).`);
+  const comments = body.comments.map(c => ({
+    id: String(c?.pk ?? c?.id ?? ''),
+    author: String(c?.user?.username || 'instagram').slice(0, 60),
+    avatar: safeMediaUrl(c?.user?.profile_pic_url),
+    text: String(c?.text || '').slice(0, 2200),
+    createdAt: Number.isFinite(c?.created_at) ? c.created_at : null,
+    likes: Number.isFinite(c?.comment_like_count) ? c.comment_like_count : 0,
+    replies: Number.isFinite(c?.child_comment_count) ? c.child_comment_count : 0,
+  })).filter(c => c.text);
+  const more = body.has_more_comments === true || body.has_more_headload_comments === true;
+  const cursor = typeof body.next_min_id === 'string' ? body.next_min_id : body.next_min_id ? JSON.stringify(body.next_min_id) : null;
+  return {
+    comments,
+    total: Number.isFinite(body.comment_count) ? body.comment_count : null,
+    disabled: body.comments_disabled === true,
+    cursor: more && cursor ? cursor : null,
+  };
 }
 
 export class InstagramClient {
@@ -167,6 +190,11 @@ export class InstagramClient {
       if (err.code === 'FORMAT') throw await this.halt(err);
       throw err;
     }
+  }
+  async comments(mediaId, cursor) {
+    if (!/^\d+$/.test(mediaId)) throw error('INPUT', 'Invalid media ID');
+    if (cursor != null && (typeof cursor !== 'string' || cursor.length > 2000)) throw error('INPUT', 'Invalid comments cursor');
+    return parseComments(await this.request(PATHS.comments(mediaId, cursor)));
   }
   async bookmark(mediaId, saved) {
     if (!/^\d+$/.test(mediaId)) throw error('INPUT', 'Invalid media ID');

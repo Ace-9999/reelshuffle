@@ -146,6 +146,9 @@ async function handle(message) {
         });
       } finally { resolving.delete(requestId); }
     }
+    case 'COMMENTS':
+      await ensureSession();
+      return api.comments(String(message.mediaId), message.cursor ?? null);
     case 'CANCEL_RESOLVE':
       if (resolving.has(message.requestId)) resolving.get(message.requestId).cancelled = true;
       return {};

@@ -222,6 +222,7 @@ function updateControls() {
   $('mute').setAttribute('aria-label', settings.muted ? 'Unmute' : 'Mute');
   $('mute').setAttribute('aria-pressed', String(settings.muted));
   $('mute-label').textContent = settings.muted ? 'Sound off' : 'Sound on';
+  if (!$('comments-panel').hidden && comments.shortcode !== reel.shortcode) void loadComments(true);
 }
 
 function prepareWindow() {
@@ -396,6 +397,7 @@ feed.addEventListener('scrollend', () => {
 // Wheel anywhere on the page (not just over the reel) moves between reels.
 window.addEventListener('wheel', event => {
   if (event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  if (event.target.closest?.('#comments-panel')) return;
   if ($('player-shell').hidden || !order.length || document.querySelector('dialog[open]')) return;
   event.preventDefault();
   if (Date.now() - wheelAt < 520) return;
@@ -416,6 +418,8 @@ document.addEventListener('keydown', event => {
   else if (key === 'm') { event.preventDefault(); void toggleMute(); }
   else if (key === ' ') { event.preventDefault(); togglePlay(); }
   else if (key === 'u') { event.preventDefault(); void unsave(); }
+  else if (key === 'c') { event.preventDefault(); toggleComments(); }
+  else if (key === 'escape' && !$('comments-panel').hidden) toggleComments(false);
   else if (key === '?') $('help-dialog').showModal();
 });
 async function toggleMute() {
@@ -455,6 +459,69 @@ $('settings-form').addEventListener('submit', async event => {
     notify('Preferences saved');
   } catch (err) { notify(err.message); }
 });
+// Comments: read-only, fetched for the reel in view while the panel is open.
+const comments = { shortcode: null, cursor: null, loading: false, token: 0 };
+function timeAgo(seconds) {
+  if (!seconds) return '';
+  const s = Math.max(0, Date.now() / 1000 - seconds);
+  for (const [unit, size] of [['y', 31536000], ['w', 604800], ['d', 86400], ['h', 3600], ['m', 60]]) if (s >= size) return `${Math.floor(s / size)}${unit}`;
+  return 'now';
+}
+function commentNode(c) {
+  const row = document.createElement('div'); row.className = 'comment';
+  const avatar = document.createElement(c.avatar ? 'img' : 'span'); avatar.className = 'comment-avatar';
+  if (c.avatar) { avatar.src = c.avatar; avatar.alt = ''; avatar.referrerPolicy = 'no-referrer'; } else avatar.textContent = c.author.slice(0, 1);
+  const body = document.createElement('div');
+  const head = document.createElement('div'); head.className = 'comment-head';
+  const name = document.createElement('strong'); name.textContent = c.author;
+  const when = document.createElement('span'); when.textContent = timeAgo(c.createdAt);
+  head.append(name, when);
+  const text = document.createElement('p'); text.textContent = c.text;
+  const meta = document.createElement('div'); meta.className = 'comment-meta';
+  meta.textContent = [c.likes ? `${c.likes.toLocaleString()} like${c.likes === 1 ? '' : 's'}` : '', c.replies ? `${c.replies.toLocaleString()} repl${c.replies === 1 ? 'y' : 'ies'}` : ''].filter(Boolean).join(' · ');
+  body.append(head, text); if (meta.textContent) body.append(meta);
+  row.append(avatar, body);
+  return row;
+}
+function commentsNote(text) { const p = document.createElement('p'); p.className = 'comments-note'; p.textContent = text; return p; }
+async function loadComments(reset = false) {
+  const reel = order[active]; if (!reel) return;
+  if (reset) {
+    Object.assign(comments, { shortcode: reel.shortcode, cursor: null, loading: false, token: comments.token + 1 });
+    $('comments-title').textContent = 'Comments';
+    $('comments-list').replaceChildren(commentsNote('Loading comments…'));
+    $('comments-instagram').href = `https://www.instagram.com/${reel.kind === 'image' ? 'p' : 'reel'}/${reel.shortcode}/`;
+    $('comments-more').hidden = true;
+  }
+  if (comments.loading) return;
+  const token = comments.token; comments.loading = true; $('comments-more').disabled = true;
+  try {
+    const page = await rpc('COMMENTS', { mediaId: reel.mediaId, cursor: comments.cursor });
+    if (token !== comments.token) return;
+    if (reset) $('comments-list').replaceChildren();
+    if (page.total != null) $('comments-title').textContent = `Comments · ${page.total.toLocaleString()}`;
+    $('comments-list').append(...page.comments.map(commentNode));
+    if (!$('comments-list').childElementCount) $('comments-list').append(commentsNote(page.disabled ? 'Comments are turned off for this reel.' : 'No comments yet.'));
+    comments.cursor = page.cursor; $('comments-more').hidden = !page.cursor;
+  } catch (err) {
+    if (token !== comments.token) return;
+    if (reset) $('comments-list').replaceChildren();
+    $('comments-list').append(commentsNote(err.message || 'Comments couldn’t load right now.'));
+  } finally {
+    if (token === comments.token) { comments.loading = false; $('comments-more').disabled = false; }
+  }
+}
+function toggleComments(show = $('comments-panel').hidden) {
+  $('comments-panel').hidden = !show;
+  document.body.classList.toggle('comments-open', show);
+  $('comments-open').setAttribute('aria-expanded', String(show));
+  if (show && comments.shortcode !== order[active]?.shortcode) void loadComments(true);
+  if (!show) feed.focus({ preventScroll: true });
+}
+$('comments-open').addEventListener('click', () => toggleComments());
+$('comments-close').addEventListener('click', () => toggleComments(false));
+$('comments-more').addEventListener('click', () => void loadComments());
+
 // Export: every cached record, with its Instagram link, as JSON or CSV.
 async function exportRows() {
   const records = await getReels();
