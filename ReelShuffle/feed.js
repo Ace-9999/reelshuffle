@@ -55,7 +55,7 @@ function dismissToast() {
 function applyState(next) {
   state = next;
   blocked = next.phase === 'error' && blockers.has(next.code);
-  $('sync-status').textContent = (next.message || 'Ready when you are') + (next.pendingUnsaves && next.phase !== 'syncing' ? ` · ${next.pendingUnsaves} unsave${next.pendingUnsaves === 1 ? '' : 's'} waiting for Refresh` : '');
+  $('sync-status').textContent = (next.message || 'Ready') + (next.pendingUnsaves && next.phase !== 'syncing' ? ` · ${next.pendingUnsaves} unsave${next.pendingUnsaves === 1 ? '' : 's'} waiting for Refresh` : '');
   $('sync-status').title = next.lastSync ? `Last full refresh: ${new Date(next.lastSync).toLocaleString()}` : 'No complete refresh yet';
   $('status-dot').className = `status-dot ${next.phase === 'syncing' ? 'busy' : next.phase === 'error' ? 'error' : ''}`;
   $('refresh').disabled = next.phase === 'syncing' || clearInProgress;

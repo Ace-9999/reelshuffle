@@ -7,7 +7,7 @@ import { createTabTransport } from './lib/tab-transport.js';
 const transport = createTabTransport();
 const api = new InstagramClient({ fetcher: transport.fetcher });
 let settings = { ...DEFAULT_SETTINGS };
-let state = { phase: 'idle', loaded: 0, message: 'Ready when you are', lastSync: null };
+let state = { phase: 'idle', loaded: 0, message: 'Ready', lastSync: null };
 let syncPromise = null, sessionPromise = null, verified = false, generation = 0;
 let suppressed = new Set(), seen = null;
 let mutations = Promise.resolve();

@@ -68,3 +68,5 @@ main{display:flex;justify-content:center;align-items:center;height:100vh;height:
 .rail-button .speed-label{font-size:13px;font-weight:700;letter-spacing:-.3px}
 #speed.on>span{background:#c3cbff;color:#141626;border-color:#c3cbff}
 #speed.on small{color:#c3cbff}
+/* Status sits right beside the ReelShuffle logo. */
+.top-status{flex:1;justify-content:flex-start;margin-left:4px}
