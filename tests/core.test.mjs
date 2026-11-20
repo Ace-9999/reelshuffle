@@ -15,7 +15,10 @@ function harness(responses) {
     calls.push({ url, options, time });
     const next = responses.shift();
     if (!next) throw new Error('Unexpected extra request');
-    return { status: next.status || 200, ok: (next.status || 200) < 400, url, async json() { return next.body; } };
+    return { status: next.status || 200, ok: (next.status || 200) < 400, url, async json() {
+      if (next.html) throw new SyntaxError('Expected JSON');
+      return next.body;
+    } };
   };
   const client = new InstagramClient({ storage, cookies, fetcher, now: () => time, sleep: async ms => { waits.push(ms); time += ms; } });
   return { client, calls, stored, waits, advance(ms) { time += ms; } };
@@ -70,6 +73,19 @@ test('all calls are serialized and at least 1.5 seconds apart', async () => {
   assert.equal(h.calls[2].options.credentials, 'include'); assert.match(h.calls[2].url, /\/api\/v1\/web\/save\/1\/unsave\//);
   assert.equal(JSON.stringify(h.stored).includes('test-csrf-not-real'), false);
 });
+test('a missing reel does not block saved-list requests', async () => {
+  const h = harness([
+    { status: 404, html: true },
+    { body: { data: { xdt_api__v1__media__shortcode__web_info: { items: [] } } } },
+    { body: { items: [], more_available: false } },
+  ]);
+  await assert.rejects(h.client.resolve('1', undefined, 'REEL_1'), { code: 'UNAVAILABLE' });
+  await h.client.saved('cursor&value', false);
+  assert.deepEqual(h.calls.map(c => c.time), [10000, 11500, 13000]);
+  assert.equal(new URL(h.calls[1].url).pathname, '/api/graphql');
+  assert.equal(new URL(h.calls[2].url).search, '?max_id=cursor%26value');
+  assert.equal(h.stored.apiBlock, undefined);
+});
 test('429 blocks all queued calls, survives restart and doubles explicit retry cooldown', async () => {
   const h = harness([{ status: 429, body: {} }, { status: 429, body: {} }]);
   const results = await Promise.allSettled([h.client.saved(null, false), h.client.resolve('1')]);
@@ -83,7 +99,7 @@ test('429 blocks all queued calls, survives restart and doubles explicit retry c
 test('challenge never retries automatically; session expiry stops queued calls', async () => {
   for (const [response, code] of [[{ status: 403, body: { message: 'challenge_required' } }, 'CHALLENGE'], [{ status: 401, body: {} }, 'AUTH']]) {
     const h = harness([response]);
-    const results = await Promise.allSettled([h.client.saved(null, false), h.client.resolve('1')]);
+    const results = await Promise.allSettled([h.client.resolve('1', undefined, 'REEL_1'), h.client.saved(null, false)]);
     assert.ok(results.every(r => r.status === 'rejected' && r.reason.code === code)); assert.equal(h.calls.length, 1);
   }
 });

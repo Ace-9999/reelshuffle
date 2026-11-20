@@ -4,9 +4,11 @@ import { cleanRecord, safeMediaUrl } from './model.js';
 
 const ORIGIN = 'https://www.instagram.com';
 const APP_ID = '936619743392459';
+const POST_QUERY = { name: 'PolarisPostRootQuery', docId: '27128499623469141' };
 const PATHS = {
   saved: '/api/v1/feed/saved/posts/',
   info: id => `/api/v1/media/${id}/info/`,
+  graphql: '/api/graphql',
   comments: (id, cursor) => `/api/v1/media/${id}/comments/?${new URLSearchParams({ can_support_threading: 'true', permalink_enabled: 'false', ...(cursor ? { min_id: cursor } : {}) })}`,
   bookmark: (id, saved) => `/api/v1/web/save/${id}/${saved ? 'save' : 'unsave'}/`,
 };
@@ -15,6 +17,7 @@ export class InstagramError extends Error {
   constructor(code, message, details = {}) { super(message); this.name = 'InstagramError'; this.code = code; Object.assign(this, details); }
 }
 const error = (code, message) => new InstagramError(code, message);
+const unavailable = () => error('UNAVAILABLE', 'This reel is private, deleted or unavailable.');
 export function formatError(context) {
   // Deliberately avoid response bodies, cookies, tokens and signed URLs in logs.
   // The context only names fields and status codes, so it is safe to show and lets a format change be diagnosed.
@@ -66,17 +69,18 @@ export function parseSavedPage(body, includeNonReels = false) {
 
 export function parseVideo(body) {
   const media = body?.items?.[0];
-  if (!media) throw formatError(`media info has no items, ${shape(body)}`);
+  if (!Array.isArray(body?.items)) throw formatError(`media info has no items, ${shape(body)}`);
+  if (!media) throw unavailable();
   const primary = Number(media.media_type) === 8 ? media.carousel_media?.[0] : media;
   if (!primary) throw formatError('media info has no primary item');
   if (Number(primary.media_type) === 1) {
     const url = safeMediaUrl(primary.image_versions2?.candidates?.[0]?.url);
     if (url) return { url, kind: 'image' };
   }
-  if (!Array.isArray(primary.video_versions)) throw error('UNAVAILABLE', 'This reel is private, deleted or unavailable.');
+  if (!Array.isArray(primary.video_versions)) throw unavailable();
   const versions = [...primary.video_versions].sort((a, b) => (b.width || 0) - (a.width || 0));
   const url = versions.map(v => safeMediaUrl(v.url)).find(Boolean);
-  if (!url) throw error('UNAVAILABLE', 'This reel is private, deleted or unavailable.');
+  if (!url) throw unavailable();
   return { url, kind: 'video' };
 }
 
@@ -103,9 +107,11 @@ export function parseComments(body) {
 }
 
 export class InstagramClient {
-  constructor({ fetcher = (url, options) => globalThis.fetch(url, options), cookies = chrome.cookies, storage = chrome.storage.local, now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
-    Object.assign(this, { fetcher, cookies, storage, now, sleep });
+  constructor({ fetcher = (url, options) => globalThis.fetch(url, options), bookmarkOnPage, cookies = chrome.cookies, storage = chrome.storage.local, now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+    Object.assign(this, { fetcher, bookmarkOnPage, cookies, storage, now, sleep });
     this.queue = Promise.resolve(); this.lastRequest = null; this.delay = 1500; this.block = null;
+    this.useWebMedia = false;
+    this.usePageBookmark = new Set();
     this.ready = storage.get('apiBlock').then(v => { this.block = v.apiBlock || null; });
   }
   async assertAllowed() {
@@ -128,44 +134,55 @@ export class InstagramClient {
     err.retryAt = retryAt;
     return err;
   }
-  request(path, { method = 'GET', mutation = false, before } = {}) {
-    const run = async () => {
+  enqueue(run, before) {
+    const result = this.queue.then(async () => {
       await this.assertAllowed();
       if (before) before();
       if (this.lastRequest != null) await this.sleep(Math.max(0, this.delay - (this.now() - this.lastRequest)));
       await this.assertAllowed();
       if (before) before();
+      return run();
+    });
+    this.queue = result.catch(() => {});
+    return result;
+  }
+  request(path, { method = 'GET', body: requestBody, before, operation = 'request', mediaLookup = false, bookmark = false } = {}) {
+    return this.enqueue(async () => {
       const csrf = await this.cookies.get({ url: ORIGIN, name: 'csrftoken' });
       if (!csrf?.value) throw await this.halt(error('AUTH', 'Log in to Instagram in this Chrome profile to continue.'));
       const headers = { 'X-IG-App-ID': APP_ID, 'X-CSRFToken': csrf.value, 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' };
-      if (mutation) headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      if (method === 'POST') headers['Content-Type'] = 'application/x-www-form-urlencoded';
       let response;
       this.lastRequest = this.now();
       try {
         response = await this.fetcher(`${ORIGIN}${path}`, {
           method, headers, credentials: 'include', redirect: 'follow', cache: 'no-store',
-          signal: AbortSignal.timeout(15000), ...(mutation ? { body: '' } : {}),
+          signal: AbortSignal.timeout(15000), ...(requestBody !== undefined ? { body: requestBody } : {}),
         });
       } catch { throw error('NETWORK', 'Instagram is unreachable. Your cached list is still available.'); }
       if (response.status === 429) throw await this.halt(error('RATE_LIMIT', 'Instagram asked us to slow down. Requests are paused; wait before refreshing.'));
       if (response.status === 401 || /\/accounts\/login/.test(response.url || '')) throw await this.halt(error('AUTH', 'Your Instagram session expired. Log in, then resume here.'));
-      if (/\/(challenge|checkpoint)\//.test(response.url || '')) throw await this.halt(error('CHALLENGE', 'Instagram needs your attention. Requests are paused. Open Instagram and wait before trying again.'));
+      if (/\/(challenge|checkpoint)(\/|$)/.test(response.url || '')) throw await this.halt(error('CHALLENGE', 'Instagram needs your attention. Requests are paused. Open Instagram and wait before trying again.'));
+      const missingRoute = response.status === 404 || response.url === `${ORIGIN}/`;
       let body;
       try { body = await response.json(); } catch {
         if (response.status === 403) throw await this.halt(error('CHALLENGE', 'Instagram blocked this request. Open Instagram and wait before trying again.'));
-        throw await this.halt(formatError(`expected JSON, got HTTP ${response.status} ${response.contentKind || 'non-JSON body'}`));
+        // The retired media route can return an HTML 404 or redirect to the Instagram homepage.
+        if (missingRoute && mediaLookup) throw unavailable();
+        if (missingRoute && bookmark) throw error('BOOKMARK_ROUTE', 'Instagram’s bookmark endpoint is unavailable.');
+        throw await this.halt(formatError(`${operation}: expected JSON, got HTTP ${response.status} ${response.contentKind || 'non-JSON body'}`));
       }
-      const message = String(body?.message || '').toLowerCase();
+      const message = String(body?.message || body?.errors?.[0]?.message || '').toLowerCase();
       if (body?.challenge || body?.checkpoint_url || /challenge|checkpoint|feedback_required|consent_required/.test(message)) throw await this.halt(error('CHALLENGE', 'Instagram needs your attention. Open Instagram and wait before trying again.'));
       if (message.includes('login_required')) throw await this.halt(error('AUTH', 'Your Instagram session expired. Log in, then resume here.'));
       if (response.status === 403) throw await this.halt(error('CHALLENGE', 'Instagram blocked this request. Open Instagram and wait before trying again.'));
-      if (response.status === 404) throw error('UNAVAILABLE', 'This Instagram endpoint or reel is unavailable.');
+      if (response.status === 404) {
+        if (bookmark) throw error('BOOKMARK_ROUTE', 'Instagram’s bookmark endpoint is unavailable.');
+        throw unavailable();
+      }
       if (!response.ok || body?.status === 'fail') throw error('REQUEST', 'Instagram could not complete this request. Please try later.');
       return body;
-    };
-    const result = this.queue.then(run);
-    this.queue = result.catch(() => {});
-    return result;
+    }, before);
   }
   // Login state comes from the session cookies themselves (presence only; values are never stored or sent anywhere).
   // The saved-list request that follows is the real authenticated check: a logged-out session fails it with AUTH.
@@ -179,26 +196,68 @@ export class InstagramClient {
     return { id: userCookie.value, username: '' };
   }
   async saved(cursor, includeNonReels, before) {
-    const query = new URLSearchParams({ count: '50', ...(cursor ? { max_id: cursor } : {}) });
-    const body = await this.request(`${PATHS.saved}?${query}`, { before });
+    const path = cursor ? `${PATHS.saved}?${new URLSearchParams({ max_id: cursor })}` : PATHS.saved;
+    const body = await this.request(path, { before, operation: 'saved posts' });
     try { return parseSavedPage(body, includeNonReels); } catch (err) { throw await this.halt(err); }
   }
-  async resolve(mediaId, before) {
+  async resolve(mediaId, before, shortcode) {
     if (!/^\d+$/.test(mediaId)) throw error('INPUT', 'Invalid media ID');
-    const body = await this.request(PATHS.info(mediaId), { before });
-    try { return parseVideo(body); } catch (err) {
-      if (err.code === 'FORMAT') throw await this.halt(err);
-      throw err;
+    const hasShortcode = typeof shortcode === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(shortcode);
+    if (!this.useWebMedia || !hasShortcode) {
+      try {
+        return parseVideo(await this.request(PATHS.info(mediaId), { before, operation: 'reel playback', mediaLookup: true }));
+      } catch (err) {
+        if (err.code === 'FORMAT' && !this.block) throw await this.halt(err);
+        if (err.code !== 'UNAVAILABLE' || !hasShortcode) throw err;
+      }
     }
+    const body = new URLSearchParams({
+      doc_id: POST_QUERY.docId,
+      fb_api_caller_class: 'RelayModern',
+      fb_api_req_friendly_name: POST_QUERY.name,
+      server_timestamps: 'true',
+      variables: JSON.stringify({
+        shortcode,
+        __relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider: false,
+      }),
+    });
+    const result = await this.request(PATHS.graphql, { method: 'POST', body: body.toString(), before, operation: 'reel playback', mediaLookup: true });
+    const media = result?.data?.xdt_api__v1__media__shortcode__web_info;
+    if (!Array.isArray(media?.items)) throw unavailable();
+    const source = parseVideo(media);
+    this.useWebMedia = true;
+    return source;
   }
   async comments(mediaId, cursor) {
     if (!/^\d+$/.test(mediaId)) throw error('INPUT', 'Invalid media ID');
     if (cursor != null && (typeof cursor !== 'string' || cursor.length > 2000)) throw error('INPUT', 'Invalid comments cursor');
-    return parseComments(await this.request(PATHS.comments(mediaId, cursor)));
+    return parseComments(await this.request(PATHS.comments(mediaId, cursor), { operation: 'comments' }));
   }
-  async bookmark(mediaId, saved) {
+  async bookmark(mediaId, saved, { shortcode, before } = {}) {
     if (!/^\d+$/.test(mediaId)) throw error('INPUT', 'Invalid media ID');
-    const body = await this.request(PATHS.bookmark(mediaId, saved), { method: 'POST', mutation: true });
-    if (body?.status !== 'ok') throw await this.halt(formatError('bookmark result has no success status'));
+    if (!this.usePageBookmark.has(saved)) {
+      try {
+        const body = await this.request(PATHS.bookmark(mediaId, saved), { method: 'POST', body: '', before, bookmark: true, operation: saved ? 'save' : 'unsave' });
+        if (body?.status !== 'ok') throw await this.halt(formatError('bookmark result has no success status'));
+        return;
+      } catch (err) {
+        if (err.code !== 'BOOKMARK_ROUTE') throw err;
+      }
+    }
+    if (this.bookmarkOnPage && typeof shortcode === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(shortcode)) {
+      const result = await this.enqueue(async () => {
+        const result = await this.bookmarkOnPage(shortcode, saved, before);
+        this.lastRequest = this.now();
+        if (result?.code === 'AUTH') throw await this.halt(error('AUTH', 'Your Instagram session expired. Log in, then resume here.'));
+        if (result?.code === 'CHALLENGE') throw await this.halt(error('CHALLENGE', 'Instagram needs your attention. Open Instagram and wait before trying again.'));
+        if (result?.code === 'RATE_LIMIT') throw await this.halt(error('RATE_LIMIT', 'Instagram asked us to slow down. Requests are paused; wait before refreshing.'));
+        return result;
+      }, before);
+      if (result?.ok) {
+        this.usePageBookmark.add(saved);
+        return;
+      }
+    }
+    throw error('BOOKMARK_PENDING', `Instagram couldn’t confirm the ${saved ? 'save' : 'unsave'}.`);
   }
 }

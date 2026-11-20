@@ -62,12 +62,12 @@ All Instagram-specific paths, headers, parsing, cookie reads and pacing live in 
 | Operation | Method and path |
 | --- | --- |
 | Session check | `GET /api/v1/accounts/current_user/?edit=true` |
-| Saved library | `GET /api/v1/feed/saved/posts/?count=50&max_id=…` |
-| Fresh playback source | `GET /api/v1/media/{mediaId}/info/` |
-| Unsave | `POST /api/v1/web/save/{mediaId}/unsave/` |
-| Undo / save | `POST /api/v1/web/save/{mediaId}/save/` |
+| Saved library | `GET /api/v1/feed/saved/posts/` with `max_id` on subsequent pages |
+| Fresh playback source | `GET /api/v1/media/{mediaId}/info/`, with `POST /api/graphql` (`PolarisPostRootQuery`) as a fallback |
+| Unsave | `POST /api/v1/web/save/{mediaId}/unsave/` or the post’s bookmark control |
+| Undo / save | `POST /api/v1/web/save/{mediaId}/save/` or the post’s bookmark control |
 
-Requests carry the Instagram web app ID, the current CSRF header, and `credentials: include`. They are serialized and spaced at least 1.5 seconds apart (2.5 seconds in Slow mode), including media lookups and save operations. There are no automatic endpoint fallbacks or challenge retries.
+Requests carry the Instagram web app ID, the current CSRF header, and `credentials: include`. They are serialized and spaced at least 1.5 seconds apart (2.5 seconds in Slow mode), including media lookups and save operations. The playback fallback runs through the logged-in Instagram tab after an unavailable media lookup. When a bookmark route returns 404, ReelShuffle uses the bookmark control in a temporary Instagram tab and checks the saved state after reloading the post. Unconfirmed unsaves stay queued while the saved feed refreshes. Login errors, rate limits, and challenges pause requests.
 
 **These endpoints are undocumented and account-dependent. This delivery was tested using simulated responses in a real Chromium extension, not against your logged-in Instagram account. Live sync, playback, unsave, cookie policy compatibility, and undo must be confirmed in your browser.** The specification itself leaves endpoint discovery dependent on live network inspection; an authenticated session was not available during the build. The adapter is implemented, but this is not a claim of live Instagram acceptance.
 

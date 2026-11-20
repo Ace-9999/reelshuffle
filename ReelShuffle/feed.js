@@ -284,7 +284,7 @@ function prepareWindow() {
 async function loadMedia(reel, attempts = 0) {
   const slot = { attempts, pending: true, requestId: crypto.randomUUID() }; assets.set(reel.shortcode, slot);
   try {
-    const data = await rpc('RESOLVE', { mediaId: reel.mediaId, requestId: slot.requestId });
+    const data = await rpc('RESOLVE', { mediaId: reel.mediaId, shortcode: reel.shortcode, requestId: slot.requestId });
     if (assets.get(reel.shortcode) !== slot) return;
     slot.data = data; slot.pending = false;
     attachMedia(reel, data);

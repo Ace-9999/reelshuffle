@@ -5,7 +5,7 @@ import { createTabTransport } from './lib/tab-transport.js';
 
 // Every Instagram call runs inside an instagram.com tab (see content.js), using the real logged-in session.
 const transport = createTabTransport();
-const api = new InstagramClient({ fetcher: transport.fetcher });
+const api = new InstagramClient({ fetcher: transport.fetcher, bookmarkOnPage: transport.bookmarkOnPage });
 let settings = { ...DEFAULT_SETTINGS };
 let state = { phase: 'idle', loaded: 0, message: 'Ready', lastSync: null };
 let syncPromise = null, sessionPromise = null, verified = false, generation = 0;
@@ -69,20 +69,25 @@ function queueMutation(run) {
 
 async function applyPendingUnsaves(cancelled) {
   const queue = await getPending();
-  let done = 0;
-  for (const reel of queue) {
-    cancelled();
-    // Skip anything restored with Undo since the queue was read.
-    if (!(await getPending()).some(p => p.shortcode === reel.shortcode)) continue;
-    await updateState({ message: `Unsaving on Instagram… ${done + 1} of ${queue.length}` });
-    try { await api.bookmark(reel.mediaId, false); } catch (err) {
-      // A deleted or unavailable post is already gone from the saved list.
-      if (err.code !== 'UNAVAILABLE') throw err;
+  let done = 0, unconfirmed = 0;
+  for (const [index, reel] of queue.entries()) {
+    try {
+      const applied = await queueMutation(async () => {
+        cancelled();
+        const pending = await getPending();
+        if (!pending.some(p => p.shortcode === reel.shortcode)) return false;
+        await updateState({ message: `Unsaving on Instagram… ${index + 1} of ${queue.length}` });
+        await api.bookmark(reel.mediaId, false, { shortcode: reel.shortcode, before: cancelled });
+        await setPending(pending.filter(p => p.shortcode !== reel.shortcode));
+        return true;
+      });
+      if (applied) done++;
+    } catch (err) {
+      if (err.code !== 'BOOKMARK_PENDING') throw err;
+      unconfirmed++;
     }
-    done++;
-    await queueMutation(async () => setPending((await getPending()).filter(p => p.shortcode !== reel.shortcode)));
   }
-  return done;
+  return { done, unconfirmed };
 }
 
 // full=false: stop at the first page that contains a reel already in the cache (the list is newest first).
@@ -101,9 +106,10 @@ async function sync({ full = false } = {}) {
       await updateState({ phase: 'syncing', code: null, retryAt: null, loaded: 0, message: 'Checking your Instagram session…' });
       await ensureSession(true);
       cancelled();
-      const unsaved = await applyPendingUnsaves(cancelled);
+      // Keep just-unsaved reels hidden if Instagram’s saved list still returns them during this refresh.
+      await queueMutation(async () => { suppressed = new Set((await getPending()).map(p => p.shortcode)); });
+      const { done: unsaved, unconfirmed } = await applyPendingUnsaves(cancelled);
       cancelled();
-      suppressed = new Set((await getPending()).map(p => p.shortcode));
       const known = new Set((await getReels()).map(r => r.shortcode));
       let cursor = null, pages = 0, added = 0;
       const cursors = new Set();
@@ -134,7 +140,9 @@ async function sync({ full = false } = {}) {
       else await setMeta('lastSync', Date.now());
       await chrome.storage.local.remove('blockFailures');
       const count = (await getReels()).length;
-      const parts = [added ? `${added.toLocaleString()} new` : 'No new saves', unsaved ? `${unsaved.toLocaleString()} unsaved on Instagram` : ''].filter(Boolean);
+      const parts = [added ? `${added.toLocaleString()} new` : 'No new saves'];
+      if (unsaved) parts.push(`${unsaved.toLocaleString()} unsaved on Instagram`);
+      if (unconfirmed) parts.push(`Instagram couldn’t confirm ${unconfirmed.toLocaleString()} ${unconfirmed === 1 ? 'unsave' : 'unsaves'}`);
       await updateState({ phase: 'ready', loaded: count, lastSync: Date.now(), message: `All caught up · ${parts.join(' · ')}`, code: null, retryAt: null });
       broadcast({ type: 'CACHE_CHANGED' });
     } catch (err) {
@@ -158,7 +166,7 @@ async function bookmark(record, saved) {
       await deleteReel(reel.shortcode);
     } else {
       if (queued) await setPending(queue.filter(p => p.shortcode !== reel.shortcode));
-      else { await ensureSession(); await api.bookmark(reel.mediaId, true); }
+      else { await ensureSession(); await api.bookmark(reel.mediaId, true, { shortcode: reel.shortcode }); }
       suppressed.delete(reel.shortcode);
       await putReels([reel]);
     }
@@ -201,7 +209,7 @@ async function handle(message) {
         await ensureSession();
         return await api.resolve(String(message.mediaId), () => {
           if (request.cancelled) throw new InstagramError('CANCELLED', 'This reel is no longer near the viewport.');
-        });
+        }, message.shortcode);
       } finally { resolving.delete(requestId); }
     }
     case 'COMMENTS':
